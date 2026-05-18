@@ -1,9 +1,11 @@
 import random
 import numpy as np
 import matplotlib.pyplot as plt
+import pickle
+
 #[x,x,x] = [stone, dear, pineapple]
 #color: grey (w), blue (b), red (r), green (g) j'ai choisi w comme white pour gris car g est déjà pris par green
-# ["points", x] (x points),  ["night", x] (x points par carte nuit),  ["reb", x] (x point par carte rouge et bleu (re = red, b = blue, g = green, y = yellow, w = gray),  
+# ["points", x] (x points),  ["night", x] (x points par carte nuit),  ["bre", x] (x point par carte rouge et bleu (re = red, b = blue, g = green, y = yellow, w = gray),  
 # ["color", x] (x points pour chaque 4 couleurs différentes), ["stone", x] (x points par pierre), ["parchment", x], 
 # ["resources", x] (x points pour chaque 3 resources différentes)
 cards_data= {
@@ -32,7 +34,7 @@ cards_data= {
     22: {"resources": [0, 0, 0], "parchment": True, "color": "g", "night": True, "condition": None, "points": ["parchment", 1]},
     23: {"resources": [1, 1, 0], "parchment": False, "color": "r", "night": True, "condition": None, "points": ["color", 10]},
     24: {"resources": [0, 1, 0], "parchment": False, "color": "g", "night": True, "condition": [0, 1, 0], "points": ["night", 2]},
-    25: {"resources": [0, 0, 0], "parchment": False, "color": "y", "night": True, "condition": None, "points": ["yg", 1]},
+    25: {"resources": [0, 0, 0], "parchment": False, "color": "y", "night": True, "condition": None, "points": ["gy", 1]},
     26: {"resources": [0, 1, 0], "parchment": False, "color": "r", "night": True, "condition": None, "points": ["pineapple", 3]},
     27: {"resources": [0, 0, 0], "parchment": False, "color": "y", "night": True, "condition": None, "points": ["yb", 1]},
     28: {"resources": [1, 0, 0], "parchment": False, "color": "r", "night": True, "condition": None, "points": ["dear", 3]},
@@ -49,7 +51,7 @@ cards_data= {
     39: {"resources": [1, 0, 1], "parchment": False, "color": "r", "night": True, "condition": [0, 2, 0], "points": ["points", 9]},
     40: {"resources": [0, 0, 0], "parchment": False, "color": "b", "night": True, "condition": [1, 1, 1], "points": ["night", 3]},
     41: {"resources": [0, 0, 1], "parchment": False, "color": "g", "night": False, "condition": [2, 1, 0], "points": ["night", 4]},
-    42: {"resources": [0, 0, 0], "parchment": False, "color": "y", "night": False, "condition": [1, 1, 0], "points": ["yg", 2]},
+    42: {"resources": [0, 0, 0], "parchment": False, "color": "y", "night": False, "condition": [1, 1, 0], "points": ["gy", 2]},
     43: {"resources": [1, 0, 0], "parchment": False, "color": "b", "night": False, "condition": None, "points": ["color", 10]},
     44: {"resources": [0, 0, 0], "parchment": False, "color": "y", "night": False, "condition": [1, 0, 1], "points": ["yb", 2]},
     45: {"resources": [1, 0, 0], "parchment": False, "color": "g", "night": False, "condition": [0, 3, 0], "points": ["points", 13]},
@@ -72,7 +74,7 @@ cards_data= {
     62: {"resources": [0, 0, 0], "parchment": True, "color": "y", "night": False, "condition": [0, 0, 3], "points": ["yb", 3]},
     63: {"resources": [0, 0, 0], "parchment": True, "color": "g", "night": False, "condition": [0, 2, 1], "points": ["points", 15]},
     64: {"resources": [0, 0, 0], "parchment": True, "color": "b", "night": False, "condition": [2, 0, 2], "points": ["points", 18]},
-    65: {"resources": [0, 0, 0], "parchment": True, "color": "y", "night": False, "condition": [0, 0, 3], "points": ["yg", 3]},
+    65: {"resources": [0, 0, 0], "parchment": True, "color": "y", "night": False, "condition": [0, 0, 3], "points": ["gy", 3]},
     66: {"resources": [0, 0, 0], "parchment": False, "color": "b", "night": False, "condition": [4, 0, 0], "points": ["points", 20]},
     67: {"resources": [0, 0, 0], "parchment": True, "color": "g", "night": False, "condition": [0, 2, 2], "points": ["points", 20]},
     68: {"resources": [0, 0, 0], "parchment": False, "color": "b", "night": False, "condition": [5, 0, 0], "points": ["points", 24]},
@@ -132,15 +134,106 @@ sanctuary_data = {
     "143": {"resources": [0, 0, 0], "parchment": False, "color": "w", "night": False, "points": ["yre", 1]},
     "144": {"resources": [0, 0, 0], "parchment": False, "color": "w", "night": False, "points": ["stone", 2]},
     "145": {"resources": [0, 0, 0], "parchment": False, "color": "w", "night": False, "points": ["bre", 1]},
-    "146": {"resources": [0, 0, 0], "parchment": False, "color": "w", "night": False, "points": ["yg", 1]},
-    "147": {"resources": [0, 0, 0], "parchment": False, "color": "w", "night": False, "points": ["gb", 1]},
+    "146": {"resources": [0, 0, 0], "parchment": False, "color": "w", "night": False, "points": ["gy", 1]},
+    "147": {"resources": [0, 0, 0], "parchment": False, "color": "w", "night": False, "points": ["bg", 1]},
     "148": {"resources": [0, 0, 0], "parchment": False, "color": "w", "night": False, "points": ["gre", 1]},
-    "149": {"resources": [0, 0, 0], "parchment": False, "color": "w", "night": False, "points": ["yb", 1]},
+    "149": {"resources": [0, 0, 0], "parchment": False, "color": "w", "night": False, "points": ["by", 1]},
     "150": {"resources": [0, 0, 0], "parchment": False, "color": "w", "night": False, "points": ["parchment", 2]},
     "151": {"resources": [0, 0, 0], "parchment": False, "color": "w", "night": False, "points": ["pineapple", 2]},
     "152": {"resources": [0, 0, 0], "parchment": False, "color": "w", "night": False, "points": ["dear", 2]},
     "153": {"resources": [0, 0, 0], "parchment": False, "color": "w", "night": False, "points": ["points", 5]},
 }
+
+class AI:
+    def __init__(self, filename="ai_memory.pkl"):
+        self.filename = filename
+        self.history = []
+
+        self.epsilon_min = 0.05
+        self.epsilon_decay = 0.999995
+
+        self.q_table = self.load_memory()
+
+    def learn_final_reward(self, reward):
+        learning_rate = 0.1
+        gamma = 0.95  # discount factor
+
+        for i, (state, mode, action) in enumerate(reversed(self.history)):
+            discounted_reward = reward * (gamma ** i)
+            key = (state, mode, action)
+            old_value = self.q_table.get(key, 0)
+            self.q_table[key] = old_value + learning_rate * (discounted_reward - old_value)
+
+        self.history = []
+
+    def update_epsilon(self):
+        if self.epsilon > self.epsilon_min:
+            self.epsilon *= self.epsilon_decay
+
+    def load_memory(self):
+        try:
+            with open(self.filename, "rb") as file:
+                data = pickle.load(file)
+                self.epsilon = data["epsilon"]
+                return data["q_table"]
+        except FileNotFoundError:
+            self.epsilon = 0.5
+            return {}
+        
+    def save_memory(self):
+        data = {
+            "q_table": self.q_table,
+            "epsilon": self.epsilon
+        }
+
+        with open(self.filename, "wb") as file:
+            pickle.dump(data, file)
+
+    def choose_action(self, player, game, mode, nb_actions=None):
+        if mode == "play":
+            state = player.get_state(game)
+            possible_actions = list(range(len(player.cards_in_hand)))
+
+        elif mode == "pick":
+            state = player.get_state(game)
+
+            if nb_actions is None:
+                nb_actions = len(game.cards.cards_on_board)
+
+            possible_actions = list(range(nb_actions))
+
+        if random.random() < self.epsilon:
+            action = random.choice(possible_actions)
+            self.history.append((state, mode, action))
+            return action
+
+        best_action = random.choice(possible_actions)
+        best_value = -999999
+
+        for action in possible_actions:
+            key = (state, mode, action)
+            value = self.q_table.get(key, 0)
+
+            if value > best_value:
+                best_value = value
+                best_action = action
+
+        self.history.append((state, mode, best_action))
+        return best_action
+        
+
+    def learn_small_reward(self, reward):
+        if len(self.history) == 0:
+            return
+
+        learning_rate = 0.1
+        state, mode, action = self.history[-1]
+        key = (state, mode, action)
+
+        old_value = self.q_table.get(key, 0)
+        new_value = old_value + learning_rate * (reward - old_value)
+
+        self.q_table[key] = new_value
 
 class Cards:
     """Manage the deck of available cards and the cards currently on the board."""
@@ -324,7 +417,7 @@ class Player:
         while len(self.cards_in_hand) < 3:
             self.cards_in_hand.append(cards.draw_card())
 
-    def play_card(self, index, cards):
+    def play_card(self, index, cards, game):
         """Play a card from the player's hand.
 
         The selected card is removed from the player's hand and added to the
@@ -348,18 +441,75 @@ class Player:
                 self.sanctuary_in_hand.append(sanctuary)
                 if cards.add_parchment(sanctuary, "sanctuary") == True:
                     self.nb_parchment = self.nb_parchment + 1
+                #reward = self.count_completed_conditions(game.cards, sanctuary, action = "played")
+                #ai.learn_small_reward(reward)
         
         self.number_last_card = int(number)
 
         return number
     
+    def get_state(self, game):
+        resources = game.cards.count_resources_sanctuary(self.sanctuary_in_hand)
+
+        for c in self.cards_played:
+            card_data = game.cards.card_info[c]
+            resources["resources"][0] += card_data["resources"][0]
+            resources["resources"][1] += card_data["resources"][1]
+            resources["resources"][2] += card_data["resources"][2]
+            resources["color"].append(card_data["color"])
+            if card_data["night"]:
+                resources["night"] += 1
+
+        turns_left = game.get_nb_turns_left()
+        res = tuple(min(r, 6) for r in resources["resources"])
+        night = min(resources["night"], 5)
+        parchment = min(self.nb_parchment, 4)
+
+        # how many cards in hand have conditions? how many give points?
+        hand_has_condition = sum(1 for c in self.cards_in_hand if game.cards.card_info[c]["condition"] is not None)
+        hand_has_points = sum(1 for c in self.cards_in_hand if game.cards.card_info[c]["points"] is not None)
+
+        return (turns_left, res, night, parchment, hand_has_condition, hand_has_points)
+
+    def count_completed_conditions(self, cards, new_card=None, action="played"):
+        # Temporarily add the card if we're evaluating a pick
+        if action == "picked" and new_card is not None:
+            self.cards_played.append(new_card)
+
+        total_resources = cards.count_resources_sanctuary(self.sanctuary_in_hand)
+        for c in self.cards_played:
+            if c in cards.card_info:
+                card_data = cards.card_info[c]
+            else:
+                card_data = cards.sanctuary_info[c]
+            total_resources["resources"][0] += card_data["resources"][0]
+            total_resources["resources"][1] += card_data["resources"][1]
+            total_resources["resources"][2] += card_data["resources"][2]
+
+        completed = 0
+        for c in self.cards_played:
+            if c in cards.card_info:
+                card_data = cards.card_info[c]
+            else:
+                card_data = cards.sanctuary_info[c]
+            condition = card_data.get("condition", None)
+            if condition is not None:
+                if all(total_resources["resources"][i] >= condition[i] for i in range(3)):
+                    completed += 1
+
+        # Undo the temporary addition
+        if action == "picked" and new_card is not None:
+            self.cards_played.remove(new_card)
+
+        return completed
+
     def calculate_points (self, cards):
         #print("s: ", self.sanctuary_in_hand)
         #print("s: ", self.cards_played)
 
         self.total_resources = cards.count_resources_sanctuary(self.sanctuary_in_hand)
         #print("ressources sanctuary: ", self.total_resources)
-        for c in self.cards_played:
+        for c in reversed(self.cards_played):
             c_data = cards.count_resources_one_card(cards.card_info[c])
             self.total_resources["resources"][0] += c_data["resources"][0]
             self.total_resources["resources"][1] += c_data["resources"][1]
@@ -408,8 +558,8 @@ class Game:
             self.current_player = self.player1
 
     def play_phase(self, p1_card_index, p2_card_index):
-        p1_card = self.player1.play_card(p1_card_index, self.cards)
-        p2_card = self.player2.play_card(p2_card_index, self.cards)
+        p1_card = self.player1.play_card(p1_card_index, self.cards, self)
+        p2_card = self.player2.play_card(p2_card_index, self.cards, self)
 
         if int(p1_card) < int(p2_card):
             self.first_picker = self.player1
@@ -422,22 +572,28 @@ class Game:
         #print("P2 played:", p2_card)
     
     def draw_phase(self, first_choice_index, second_choice_index):
-        # First picker chooses one card from the board
         first_card = self.cards.cards_on_board.pop(first_choice_index)
         self.first_picker.cards_in_hand.append(first_card)
 
-        # Second picker chooses one card from the remaining board
         second_card = self.cards.cards_on_board.pop(second_choice_index)
         self.second_picker.cards_in_hand.append(second_card)
 
         self.cards.refill_board()
 
+        return first_card, second_card
 
 if __name__ == "__main__":
+    wins = 0
+    draws = 0
+    losses = 0
+    ai = AI()
+    ai.epsilon = 0.5
     nb_game = 0
-    list_points = []
-    total_points = 0
-    while nb_game < 200000:
+    list_points_1 = []
+    total_points_1 = 0
+    list_points_2 = []
+    total_points_2 = 0
+    while nb_game < 2000000:
         nb_game = nb_game + 1
         game = Game()
         state = game.reset()
@@ -447,13 +603,28 @@ if __name__ == "__main__":
             game.cards.refill_board()
 
             #play a card
-            p1_index = random.randint(0, 2) #always three cards in hand
+            p1_index = ai.choose_action(game.player1, game, "play")
             p2_index = random.randint(0, 2)
+            before = game.player1.count_completed_conditions(game.cards)
             game.play_phase(p1_index, p2_index)
+            after = game.player1.count_completed_conditions(game.cards)
+            ai.learn_small_reward(after - before)
 
-            #picl a card
-            first_choice = random.randint(0, len(game.cards.cards_on_board) - 1)
-            second_choice = random.randint(0, len(game.cards.cards_on_board) - 2)
+            #pick a card
+            before = game.player1.count_completed_conditions(game.cards)
+
+            if game.first_picker == game.player1:
+                first_choice = ai.choose_action(game.player1, game, "pick", nb_actions=len(game.cards.cards_on_board))
+                ia_card_picked = game.cards.cards_on_board[first_choice]  # peek before drawing
+                second_choice = random.randint(0, len(game.cards.cards_on_board) - 2)
+            else:
+                first_choice = random.randint(0, len(game.cards.cards_on_board) - 1)
+                second_choice = ai.choose_action(game.player1, game, "pick", nb_actions=len(game.cards.cards_on_board)-1)
+                ia_card_picked = game.cards.cards_on_board[second_choice]  # peek before drawing
+
+            after = game.player1.count_completed_conditions(game.cards, ia_card_picked, action="picked")
+            ai.learn_small_reward(after - before)
+
             game.draw_phase(first_choice, second_choice)
 
             #print("P1 hand:", game.player1.cards_in_hand)
@@ -465,35 +636,82 @@ if __name__ == "__main__":
             if game.get_nb_turns_left() < 1:
                 points_player1 = game.player1.calculate_points(game.cards)
                 points_player2 = game.player2.calculate_points(game.cards)
-                #print(points_player1)
-                #print(points_player2)
-                list_points.append(points_player1)
-                list_points.append(points_player2)
-                total_points = total_points + points_player1 + points_player2
+                list_points_1.append(points_player1)
+                list_points_2.append(points_player2)
+                total_points_1 += points_player1
+                total_points_2 += points_player2
+
+                if points_player1 > points_player2:
+                    wins += 1
+                elif points_player1 == points_player2:
+                    draws += 1
+                else:
+                    losses += 1
+
+                reward = points_player1 - points_player2
+                ai.learn_final_reward(reward)
+                ai.update_epsilon()
+
+        if nb_game % 100000 == 0:
+            total = wins + draws + losses
+            print(f"{nb_game/2000000*100:.1f}% | epsilon: {ai.epsilon:.4f} | Q-table: {len(ai.q_table)} | Win: {wins/total*100:.1f}% Draw: {draws/total*100:.1f}% Loss: {losses/total*100:.1f}%")
+            wins = draws = losses = 0  # reset for next window
+
+                
     
-    print("mean: ", total_points/(nb_game*2))
-    print("median: ", np.median(list_points))
-    print("min: ", np.min(list_points))
-    print("max: ", np.max(list_points))
+    ai.save_memory()
+
+    print("epsilon:", ai.epsilon)
+    print("memory size:", len(ai.q_table))
+
+    print("mean PLAYER 1: ", total_points_1/(nb_game))
+    print("mean PLAYER 2: ", total_points_2/(nb_game))
+    print("median PLAYER 1: ", np.median(list_points_1))
+    print("median PLAYER 2: ", np.median(list_points_2))
+    print("min: ", np.min(list_points_1))
+    print("min: ", np.min(list_points_2))
     bins = list(range(0, 101, 5))  # 0, 10, 20, ..., 100
-    counts = []
+
+    counts_1 = []
+    counts_2 = []
 
     for start in bins[:-1]:
         end = start + 4
-        count = sum(start <= value <= end for value in list_points)
-        counts.append(count)
 
-    count_100_plus = sum(value >= 100 for value in list_points)
-    counts.append(count_100_plus)
+        count_1 = sum(start <= value <= end for value in list_points_1)
+        count_2 = sum(start <= value <= end for value in list_points_2)
+
+        counts_1.append(count_1)
+        counts_2.append(count_2)
+
+    count_100_plus_1 = sum(value >= 100 for value in list_points_1)
+    count_100_plus_2 = sum(value >= 100 for value in list_points_2)
+
+    counts_1.append(count_100_plus_1)
+    counts_2.append(count_100_plus_2)
 
     labels = [f"{start}-{start + 4}" for start in bins[:-1]]
     labels.append("100+")
-    print("counts: ", counts)
-    percentages = [count / len(list_points) * 100 for count in counts]
-    print("percentages:", percentages)
-    plt.bar(labels, counts)
+
+    print("counts player 1:", counts_1)
+    print("counts player 2:", counts_2)
+
+    percentages_1 = [count / len(list_points_1) * 100 for count in counts_1]
+    percentages_2 = [count / len(list_points_2) * 100 for count in counts_2]
+
+    print("percentages player 1:", percentages_1)
+    print("percentages player 2:", percentages_2)
+
+    plt.bar(labels, counts_1)
     plt.xlabel("Value range")
     plt.ylabel("How many values")
-    plt.title("Random cards")
+    plt.title("Player 1")
+    plt.xticks(rotation=45)
+    plt.show()
+
+    plt.bar(labels, counts_2)
+    plt.xlabel("Value range")
+    plt.ylabel("How many values")
+    plt.title("Player 2")
     plt.xticks(rotation=45)
     plt.show()
