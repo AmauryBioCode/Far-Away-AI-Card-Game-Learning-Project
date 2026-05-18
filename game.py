@@ -1,5 +1,6 @@
 import random
-
+import numpy as np
+import matplotlib.pyplot as plt
 #[x,x,x] = [stone, dear, pineapple]
 #color: grey (w), blue (b), red (r), green (g) j'ai choisi w comme white pour gris car g est déjà pris par green
 # ["points", x] (x points),  ["night", x] (x points par carte nuit),  ["reb", x] (x point par carte rouge et bleu (re = red, b = blue, g = green, y = yellow, w = gray),  
@@ -353,11 +354,11 @@ class Player:
         return number
     
     def calculate_points (self, cards):
-        print("s: ", self.sanctuary_in_hand)
-        print("s: ", self.cards_played)
+        #print("s: ", self.sanctuary_in_hand)
+        #print("s: ", self.cards_played)
 
         self.total_resources = cards.count_resources_sanctuary(self.sanctuary_in_hand)
-        print("ressources sanctuary: ", self.total_resources)
+        #print("ressources sanctuary: ", self.total_resources)
         for c in self.cards_played:
             c_data = cards.count_resources_one_card(cards.card_info[c])
             self.total_resources["resources"][0] += c_data["resources"][0]
@@ -372,7 +373,7 @@ class Player:
         for s in self.sanctuary_in_hand:
             self.points = self.points + cards.count_points(s, self.total_resources, self.nb_parchment)
         
-        print("total ressources : ", self.total_resources)
+        #print("total ressources : ", self.total_resources)
         return self.points
 
 class Game:
@@ -397,7 +398,7 @@ class Game:
     
     def set_turns(self):
         self.turns_left = self.turns_left - 1
-        print(self.turns_left)
+        #print(self.turns_left)
 
     def switch_player(self):
         """Switch the current player to the other player."""
@@ -417,8 +418,8 @@ class Game:
             self.first_picker = self.player2
             self.second_picker = self.player1
 
-        print("P1 played:", p1_card)
-        print("P2 played:", p2_card)
+        #print("P1 played:", p1_card)
+        #print("P2 played:", p2_card)
     
     def draw_phase(self, first_choice_index, second_choice_index):
         # First picker chooses one card from the board
@@ -433,29 +434,66 @@ class Game:
 
 
 if __name__ == "__main__":
-    game = Game()
-    state = game.reset()
+    nb_game = 0
+    list_points = []
+    total_points = 0
+    while nb_game < 200000:
+        nb_game = nb_game + 1
+        game = Game()
+        state = game.reset()
 
-    while game.get_nb_turns_left() > 0:
+        while game.get_nb_turns_left() > 0:
 
-        game.cards.refill_board()
+            game.cards.refill_board()
 
-        #play a card
-        p1_index = random.randint(0, 2) #always three cards in hand
-        p2_index = random.randint(0, 2)
-        game.play_phase(p1_index, p2_index)
+            #play a card
+            p1_index = random.randint(0, 2) #always three cards in hand
+            p2_index = random.randint(0, 2)
+            game.play_phase(p1_index, p2_index)
 
-        #picl a card
-        first_choice = random.randint(0, len(game.cards.cards_on_board) - 1)
-        second_choice = random.randint(0, len(game.cards.cards_on_board) - 2)
-        game.draw_phase(first_choice, second_choice)
+            #picl a card
+            first_choice = random.randint(0, len(game.cards.cards_on_board) - 1)
+            second_choice = random.randint(0, len(game.cards.cards_on_board) - 2)
+            game.draw_phase(first_choice, second_choice)
 
-        print("P1 hand:", game.player1.cards_in_hand)
-        print("P2 hand:", game.player2.cards_in_hand)
-        
-        print("First picker:", "P1" if game.first_picker == game.player1 else "P2")
+            #print("P1 hand:", game.player1.cards_in_hand)
+            #print("P2 hand:", game.player2.cards_in_hand)
+            
+            #print("First picker:", "P1" if game.first_picker == game.player1 else "P2")
 
-        game.set_turns()
-        if game.get_nb_turns_left() < 1:
-            print(game.player1.calculate_points(game.cards))
-            print(game.player2.calculate_points(game.cards))
+            game.set_turns()
+            if game.get_nb_turns_left() < 1:
+                points_player1 = game.player1.calculate_points(game.cards)
+                points_player2 = game.player2.calculate_points(game.cards)
+                #print(points_player1)
+                #print(points_player2)
+                list_points.append(points_player1)
+                list_points.append(points_player2)
+                total_points = total_points + points_player1 + points_player2
+    
+    print("mean: ", total_points/(nb_game*2))
+    print("median: ", np.median(list_points))
+    print("min: ", np.min(list_points))
+    print("max: ", np.max(list_points))
+    bins = list(range(0, 101, 5))  # 0, 10, 20, ..., 100
+    counts = []
+
+    for start in bins[:-1]:
+        end = start + 4
+        count = sum(start <= value <= end for value in list_points)
+        counts.append(count)
+
+    count_100_plus = sum(value >= 100 for value in list_points)
+    counts.append(count_100_plus)
+
+    labels = [f"{start}-{start + 4}" for start in bins[:-1]]
+    labels.append("100+")
+    print("counts: ", counts)
+    percentages = [count / len(list_points) * 100 for count in counts]
+    print("percentages:", percentages)
+    plt.bar(labels, counts)
+    plt.xlabel("Value range")
+    plt.ylabel("How many values")
+    plt.title("Random cards")
+    plt.xticks(rotation=45)
+    plt.show()
