@@ -2,6 +2,11 @@ import random
 import numpy as np
 import matplotlib.pyplot as plt
 import pickle
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from collections import deque
+import time
 
 #[x,x,x] = [stone, dear, pineapple]
 #color: grey (w), blue (b), red (r), green (g) j'ai choisi w comme white pour gris car g est déjà pris par green
@@ -144,96 +149,146 @@ sanctuary_data = {
     "153": {"resources": [0, 0, 0], "parchment": False, "color": "w", "night": False, "points": ["points", 5]},
 }
 
-class AI:
-    def __init__(self, filename="ai_memory.pkl"):
-        self.filename = filename
-        self.history = []
+class DQN(nn.Module):
+    def __init__(self, input_size, output_size):
+        super(DQN, self).__init__()
+        self.net = nn.Sequential(
+            nn.Linear(input_size, 128),
+            nn.ReLU(),
+            nn.Linear(128, 128),
+            nn.ReLU(),
+            nn.Linear(128, output_size)
+        )
+    
+    def forward(self, x):
+        return self.net(x)
 
+class AI:
+    def __init__(self, filename="ai_memory.pt"):
+        self.filename = filename
+        self.history_p1 = []
+        self.history_p2 = []
         self.epsilon_min = 0.05
         self.epsilon_decay = 0.999995
+        self.epsilon = 0.5
+        self.gamma = 0.95
+        self.lr = 0.001
+        self.replay_buffer = deque(maxlen=50000)
+        self.batch_size = 64
 
-        self.q_table = self.load_memory()
+        self.input_size = 78
+        # max 3 actions (play or pick)
+        self.output_size = 3
 
-    def learn_final_reward(self, reward):
-        learning_rate = 0.1
-        gamma = 0.95  # discount factor
+        self.model = DQN(self.input_size, self.output_size)
+        self.optimizer = optim.Adam(self.model.parameters(), lr=self.lr)
+        self.loss_fn = nn.MSELoss()
 
-        for i, (state, mode, action) in enumerate(reversed(self.history)):
-            discounted_reward = reward * (gamma ** i)
-            key = (state, mode, action)
-            old_value = self.q_table.get(key, 0)
-            self.q_table[key] = old_value + learning_rate * (discounted_reward - old_value)
+        self.load_memory()
 
-        self.history = []
+    def state_to_tensor(self, state):
+        #turns_left, res, night, parchment, h_stone, h_dear, h_pine, h_cond, h_pts, h_night = state
+        #flat = [turns_left, res[0], res[1], res[2], night, parchment, h_stone, h_dear, h_pine, h_cond, h_pts, h_night]
+        return torch.tensor(state, dtype=torch.float32)
+    
+
+    def choose_action(self, player, game, mode, player_id="p1", nb_actions=None):
+        state = player.get_state(game)
+        history = self.history_p1 if player_id == "p1" else self.history_p2
+
+        if mode == "play":
+            possible_actions = list(range(len(player.cards_in_hand)))
+        elif mode == "pick":
+            if nb_actions is None:
+                nb_actions = len(game.cards.cards_on_board)
+            possible_actions = list(range(nb_actions))
+
+        if random.random() < self.epsilon:
+            action = random.choice(possible_actions)
+            history.append((state, mode, action))
+            return action
+
+        with torch.no_grad():
+            q_values = self.model(self.state_to_tensor(state))
+
+        valid_actions = [a for a in possible_actions if a < self.output_size]
+        if not valid_actions:
+            valid_actions = possible_actions
+
+        best_action = max(valid_actions, key=lambda a: q_values[a].item())
+        history.append((state, mode, best_action))
+        return best_action
+
+    def store_transition(self, state, action, reward, next_state, done):
+        self.replay_buffer.append((state, action, reward, next_state, done))
+
+    def train_step(self):
+        if len(self.replay_buffer) < self.batch_size:
+            return
+
+        batch = random.sample(self.replay_buffer, self.batch_size)
+        states, actions, rewards, next_states, dones = zip(*batch)
+
+        states_t = torch.stack([self.state_to_tensor(s) for s in states])
+        next_states_t = torch.stack([self.state_to_tensor(s) for s in next_states])
+        actions_t = torch.tensor(actions, dtype=torch.long)
+        rewards_t = torch.tensor(rewards, dtype=torch.float32)
+        dones_t = torch.tensor(dones, dtype=torch.float32)
+
+        current_q = self.model(states_t).gather(1, actions_t.unsqueeze(1)).squeeze(1)
+
+        with torch.no_grad():
+            next_q = self.model(next_states_t).max(1)[0]
+            target_q = rewards_t + self.gamma * next_q * (1 - dones_t)
+
+        loss = self.loss_fn(current_q, target_q)
+        self.optimizer.zero_grad()
+        loss.backward()
+        self.optimizer.step()
+
+    def learn_small_reward(self, reward, next_state, player_id="p1"):
+        history = self.history_p1 if player_id == "p1" else self.history_p2
+        if len(history) == 0:
+            return
+
+        state, mode, action = history[-1]
+        action = min(action, self.output_size - 1)
+
+        self.store_transition(state, action, reward, next_state, done=0)
+        self.train_step()
+
+    def learn_final_reward(self, reward, player_id="p1"):
+        history = self.history_p1 if player_id == "p1" else self.history_p2
+        if len(history) == 0:
+            return
+        state, mode, action = history[-1]
+        action = min(action, self.output_size - 1)
+        self.store_transition(state, action, reward, state, done=1)
+        self.train_step()
+        if player_id == "p1":
+            self.history_p1 = []
+        else:
+            self.history_p2 = []
 
     def update_epsilon(self):
         if self.epsilon > self.epsilon_min:
             self.epsilon *= self.epsilon_decay
 
+    def save_memory(self):
+        torch.save({
+            "model": self.model.state_dict(),
+            "optimizer": self.optimizer.state_dict(),
+            "epsilon": self.epsilon
+        }, self.filename)
+
     def load_memory(self):
         try:
-            with open(self.filename, "rb") as file:
-                data = pickle.load(file)
-                self.epsilon = data["epsilon"]
-                return data["q_table"]
+            data = torch.load(self.filename)
+            self.model.load_state_dict(data["model"])
+            self.optimizer.load_state_dict(data["optimizer"])
+            self.epsilon = data["epsilon"]
         except FileNotFoundError:
-            self.epsilon = 0.5
-            return {}
-        
-    def save_memory(self):
-        data = {
-            "q_table": self.q_table,
-            "epsilon": self.epsilon
-        }
-
-        with open(self.filename, "wb") as file:
-            pickle.dump(data, file)
-
-    def choose_action(self, player, game, mode, nb_actions=None):
-        if mode == "play":
-            state = player.get_state(game)
-            possible_actions = list(range(len(player.cards_in_hand)))
-
-        elif mode == "pick":
-            state = player.get_state(game)
-
-            if nb_actions is None:
-                nb_actions = len(game.cards.cards_on_board)
-
-            possible_actions = list(range(nb_actions))
-
-        if random.random() < self.epsilon:
-            action = random.choice(possible_actions)
-            self.history.append((state, mode, action))
-            return action
-
-        best_action = random.choice(possible_actions)
-        best_value = -999999
-
-        for action in possible_actions:
-            key = (state, mode, action)
-            value = self.q_table.get(key, 0)
-
-            if value > best_value:
-                best_value = value
-                best_action = action
-
-        self.history.append((state, mode, best_action))
-        return best_action
-        
-
-    def learn_small_reward(self, reward):
-        if len(self.history) == 0:
-            return
-
-        learning_rate = 0.1
-        state, mode, action = self.history[-1]
-        key = (state, mode, action)
-
-        old_value = self.q_table.get(key, 0)
-        new_value = old_value + learning_rate * (reward - old_value)
-
-        self.q_table[key] = new_value
+            pass
 
 class Cards:
     """Manage the deck of available cards and the cards currently on the board."""
@@ -417,6 +472,23 @@ class Player:
         while len(self.cards_in_hand) < 3:
             self.cards_in_hand.append(cards.draw_card())
 
+    def calculate_current_points(self, cards):
+        # same as calculate_points but without modifying self.points
+        total_resources = cards.count_resources_sanctuary(self.sanctuary_in_hand)
+        points = 0
+        for c in reversed(self.cards_played):
+            c_data = cards.count_resources_one_card(cards.card_info[c])
+            total_resources["resources"][0] += c_data["resources"][0]
+            total_resources["resources"][1] += c_data["resources"][1]
+            total_resources["resources"][2] += c_data["resources"][2]
+            total_resources["color"].extend(c_data["color"])
+            if c_data["night"]:
+                total_resources["night"] += 1
+            points += cards.count_points(c, total_resources, self.nb_parchment)
+        for s in self.sanctuary_in_hand:
+            points += cards.count_points(s, total_resources, self.nb_parchment)
+        return points
+    
     def play_card(self, index, cards, game):
         """Play a card from the player's hand.
 
@@ -461,16 +533,37 @@ class Player:
                 resources["night"] += 1
 
         turns_left = game.get_nb_turns_left()
-        res = tuple(min(r, 6) for r in resources["resources"])
+        res = [min(r, 6) for r in resources["resources"]]
         night = min(resources["night"], 5)
         parchment = min(self.nb_parchment, 4)
 
-        # how many cards in hand have conditions? how many give points?
-        hand_has_condition = sum(1 for c in self.cards_in_hand if game.cards.card_info[c]["condition"] is not None)
-        hand_has_points = sum(1 for c in self.cards_in_hand if game.cards.card_info[c]["points"] is not None)
+        hand_features = []
+        for c in self.cards_in_hand:
+            hand_features.extend(self.encode_card(c, game.cards))
 
-        return (turns_left, res, night, parchment, hand_has_condition, hand_has_points)
+        board_features = []
+        for c in game.cards.cards_on_board:
+            board_features.extend(self.encode_card(c, game.cards))
 
+        # Safety padding in case hand/board has fewer than 3 cards
+        CARD_FEATURE_SIZE = 12
+
+        while len(hand_features) < 3 * CARD_FEATURE_SIZE:
+            hand_features.extend([0] * CARD_FEATURE_SIZE)
+
+        while len(board_features) < 3 * CARD_FEATURE_SIZE:
+            board_features.extend([0] * CARD_FEATURE_SIZE)
+
+        hand_features = hand_features[:3 * CARD_FEATURE_SIZE]
+        board_features = board_features[:3 * CARD_FEATURE_SIZE]
+
+        return tuple(
+            [turns_left]
+            + res
+            + [night, parchment]
+            + hand_features
+            + board_features
+        )
     def count_completed_conditions(self, cards, new_card=None, action="played"):
         # Temporarily add the card if we're evaluating a pick
         if action == "picked" and new_card is not None:
@@ -502,6 +595,26 @@ class Player:
             self.cards_played.remove(new_card)
 
         return completed
+    
+    def encode_card(self, card_id, cards):
+        card = cards.card_info[card_id]
+        points = card["points"]
+        condition = card["condition"]
+
+        return [
+            card["resources"][0],
+            card["resources"][1],
+            card["resources"][2],
+            int(card["parchment"]),
+            int(card["night"]),
+            int(card["color"] == "r"),
+            int(card["color"] == "b"),
+            int(card["color"] == "g"),
+            int(card["color"] == "y"),
+            int(card["color"] == "w"),
+            0 if points is None else points[1],
+            int(condition is not None),
+        ]
 
     def calculate_points (self, cards):
         #print("s: ", self.sanctuary_in_hand)
@@ -593,7 +706,8 @@ if __name__ == "__main__":
     total_points_1 = 0
     list_points_2 = []
     total_points_2 = 0
-    while nb_game < 2000000:
+    start = time.time()
+    while nb_game < 200:
         nb_game = nb_game + 1
         game = Game()
         state = game.reset()
@@ -603,29 +717,29 @@ if __name__ == "__main__":
             game.cards.refill_board()
 
             #play a card
-            p1_index = ai.choose_action(game.player1, game, "play")
-            p2_index = random.randint(0, 2)
-            before = game.player1.count_completed_conditions(game.cards)
+            p1_index = ai.choose_action(game.player1, game, "play", player_id="p1")
+            p2_index = ai.choose_action(game.player2, game, "play", player_id="p2")
+            points_before = game.player1.calculate_current_points(game.cards)
             game.play_phase(p1_index, p2_index)
-            after = game.player1.count_completed_conditions(game.cards)
-            ai.learn_small_reward(after - before)
+            after_state = game.player1.get_state(game)
+            points_after = game.player1.calculate_current_points(game.cards)
+            ai.learn_small_reward((points_after - points_before) / 50.0, after_state, player_id="p1")
 
             #pick a card
-            before = game.player1.count_completed_conditions(game.cards)
-
+            points_before = game.player1.calculate_current_points(game.cards)
             if game.first_picker == game.player1:
-                first_choice = ai.choose_action(game.player1, game, "pick", nb_actions=len(game.cards.cards_on_board))
-                ia_card_picked = game.cards.cards_on_board[first_choice]  # peek before drawing
-                second_choice = random.randint(0, len(game.cards.cards_on_board) - 2)
+                first_choice = ai.choose_action(game.player1, game, "pick", player_id="p1", nb_actions=len(game.cards.cards_on_board))
+                ia_card_picked = game.cards.cards_on_board[first_choice] 
+                second_choice = ai.choose_action(game.player2, game, "pick", player_id="p2", nb_actions=len(game.cards.cards_on_board)-1)
             else:
-                first_choice = random.randint(0, len(game.cards.cards_on_board) - 1)
-                second_choice = ai.choose_action(game.player1, game, "pick", nb_actions=len(game.cards.cards_on_board)-1)
-                ia_card_picked = game.cards.cards_on_board[second_choice]  # peek before drawing
-
-            after = game.player1.count_completed_conditions(game.cards, ia_card_picked, action="picked")
-            ai.learn_small_reward(after - before)
+                first_choice = ai.choose_action(game.player2, game, "pick", player_id="p2", nb_actions=len(game.cards.cards_on_board))
+                second_choice = ai.choose_action(game.player1, game, "pick", player_id="p1", nb_actions=len(game.cards.cards_on_board)-1)
+                ia_card_picked = game.cards.cards_on_board[second_choice]
 
             game.draw_phase(first_choice, second_choice)
+            after_state = game.player1.get_state(game)
+            points_after = game.player1.calculate_current_points(game.cards)
+            ai.learn_small_reward((points_after - points_before) / 50.0, after_state, player_id="p1")
 
             #print("P1 hand:", game.player1.cards_in_hand)
             #print("P2 hand:", game.player2.cards_in_hand)
@@ -648,21 +762,28 @@ if __name__ == "__main__":
                 else:
                     losses += 1
 
-                reward = points_player1 - points_player2
-                ai.learn_final_reward(reward)
+                reward_p1 = points_player1 / 50.0
+                reward_p2 = points_player2 / 50.0
+                ai.learn_final_reward(points_player1 / 50.0, player_id="p1")
+                ai.learn_final_reward(points_player2 / 50.0, player_id="p2")
                 ai.update_epsilon()
 
-        if nb_game % 100000 == 0:
+        if nb_game % 10 == 0:
             total = wins + draws + losses
-            print(f"{nb_game/2000000*100:.1f}% | epsilon: {ai.epsilon:.4f} | Q-table: {len(ai.q_table)} | Win: {wins/total*100:.1f}% Draw: {draws/total*100:.1f}% Loss: {losses/total*100:.1f}%")
-            wins = draws = losses = 0  # reset for next window
+            if total > 0:
+                mean_p1 = total_points_1 / nb_game
+                mean_p2 = total_points_2 / nb_game
+                print(f"{nb_game} games | epsilon: {ai.epsilon:.4f} | Win: {wins/total*100:.1f}% | mean P1: {mean_p1:.1f} | mean P2: {mean_p2:.1f}")
+                wins = draws = losses = 0
 
-                
+             
     
     ai.save_memory()
+    elapsed = time.time() - start
+    print(f"1000 games: {elapsed:.1f}s")
+    print(f"Estimated for 100k games: {elapsed * 100 / 60:.1f} minutes")
 
     print("epsilon:", ai.epsilon)
-    print("memory size:", len(ai.q_table))
 
     print("mean PLAYER 1: ", total_points_1/(nb_game))
     print("mean PLAYER 2: ", total_points_2/(nb_game))
