@@ -1,0 +1,26 @@
+V1, 200 000 games
+The AI learned from links between normal cards. At the end of each game, it checked which cards helped other cards score. 
+For example, if a condition card was completed, the AI rewarded the condition card and the resource cards that helped complete it. 
+If a card scored points from night, parchment, colors, or resources, the AI rewarded both the scoring card and the useful cards that made those points possible.
+
+mean IA:  35.51827
+mean PLAYER 2:  26.344535
+median IA:  34.0
+median PLAYER 2:  25.0
+min:  0
+Win: 69.6% Draw: 1.9% Loss: 28.6%
+counts IA: [1507, 4883, 9958, 15439, 20537, 23383, 24444, 23843, 21081, 17382, 13119, 9582, 6371, 3837, 2306, 1224, 632, 286, 114, 41, 31]
+percentages IA: [0.7535, 2.4415, 4.979, 7.7195, 10.2685, 11.6915, 12.222, 11.9215, 10.5405, 8.691, 6.5595, 4.791, 3.1855, 1.9185, 1.153, 0.612, 0.316, 0.1430, 0.057, 0.0205, 0.0155]
+
+
+V2, 200 000 games
+The new version adds the same idea for sanctuary cards. If a sanctuary card helps complete a condition or increases the points made by another card, it receives reward too. 
+
+mean IA:  37.927545
+mean PLAYER 2:  26.510795
+median IA:  37.0
+median PLAYER 2:  25.0
+min:  0
+Win: 73.7% Draw: 1.3% Loss: 24.9%
+counts IA: [1464, 3958, 8288, 12874, 17886, 21184, 23198, 23221, 21500, 18783, 15241, 11468, 8138, 5364, 3368, 2016, 1071, 545, 254, 112, 67]
+percentages IA: [0.732, 1.979, 4.144, 6.437, 8.943, 10.592, 11.599, 11.6105, 10.75, 9.3915, 7.6205, 5.734, 4.069, 2.682, 1.684, 1.008, 0.5355, 0.2725, 0.127, 0.056, 0.0335]

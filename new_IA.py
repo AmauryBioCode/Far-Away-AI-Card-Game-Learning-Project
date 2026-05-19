@@ -167,8 +167,8 @@ class AI:
         self.history = []
 
         self.learning_rate = 0.08
-        self.epsilon_min = 0.02
-        self.epsilon_decay = 0.999985
+        self.epsilon_min = 0.05
+        self.epsilon_decay = 0.99997
 
         self.q_table = {}
         self.card_values = {}
@@ -315,8 +315,12 @@ class AI:
     def all_player_cards(self, player):
         return player.cards_played.copy() + player.sanctuary_in_hand.copy()
 
-    def final_totals(self, player, cards):
-        all_cards = self.all_player_cards(player)
+    def final_totals_from_cards(self, cards, all_cards):
+        """Return final resource/color/night/parchment totals for a card list.
+
+        This helper is used both for the real final hand and for simulations
+        where we remove one sanctuary card to see what it helped.
+        """
         resources = [0, 0, 0]
         colors = []
         night_cards = []
@@ -328,8 +332,10 @@ class AI:
             resources[1] += data["resources"][1]
             resources[2] += data["resources"][2]
             colors.append(data["color"])
+
             if data.get("night", False):
                 night_cards.append(c)
+
             if data.get("parchment", False):
                 parchment_cards.append(c)
 
@@ -341,6 +347,113 @@ class AI:
             "parchment_cards": parchment_cards,
             "nb_parchment": len(parchment_cards),
         }
+
+    def final_totals(self, player, cards):
+        """Return final totals using all cards owned by the player."""
+        return self.final_totals_from_cards(cards, self.all_player_cards(player))
+
+    def final_totals_without_card(self, player, cards, excluded_card):
+        """Return final totals after removing one specific card.
+
+        This lets the AI ask:
+            "What would the final links look like if this sanctuary was absent?"
+        """
+        all_cards_without = [
+            c for c in self.all_player_cards(player)
+            if str(c) != str(excluded_card)
+        ]
+
+        return self.final_totals_from_cards(cards, all_cards_without)
+
+    def points_with_totals(self, cards, scoring_card, totals):
+        """Calculate how many points one card makes with given final totals."""
+        total_resources_for_points = {
+            "resources": totals["resources"].copy(),
+            "color": totals["color"].copy(),
+            "night": totals["night"],
+        }
+
+        return cards.count_points(
+            scoring_card,
+            total_resources_for_points,
+            totals["nb_parchment"],
+        )
+
+    def reward_sanctuary_help_links(self, rewards, player, cards):
+        """Give extra reward to sanctuary cards that helped another card score.
+
+        The previous link rewards already rewarded resources in general. This
+        new reward is more direct: for each sanctuary, we remove it mentally and
+        compare the score/condition completion of every other card.
+
+        If removing the sanctuary makes another card lose points or lose a
+        completed condition, the sanctuary receives reward for that link.
+        """
+        full_totals = self.final_totals(player, cards)
+
+        for sanctuary_card in player.sanctuary_in_hand:
+            totals_without_sanctuary = self.final_totals_without_card(
+                player,
+                cards,
+                sanctuary_card,
+            )
+
+            for helped_card in self.all_player_cards(player):
+                # A sanctuary can help another card, not itself.
+                if str(helped_card) == str(sanctuary_card):
+                    continue
+
+                helped_data = cards.get_card_data(helped_card)
+                condition = helped_data.get("condition")
+                points = helped_data.get("points")
+
+                # 1) Condition help:
+                # Reward the sanctuary if this condition is completed with the
+                # sanctuary but not completed without it.
+                if condition is not None:
+                    completed_with = all(
+                        full_totals["resources"][i] >= condition[i]
+                        for i in range(3)
+                    )
+                    completed_without = all(
+                        totals_without_sanctuary["resources"][i] >= condition[i]
+                        for i in range(3)
+                    )
+
+                    if completed_with and not completed_without:
+                        condition_reward = 5 + sum(condition)
+
+                        if points is not None:
+                            condition_reward += max(
+                                0,
+                                self.points_with_totals(
+                                    cards,
+                                    helped_card,
+                                    full_totals,
+                                ),
+                            )
+
+                        self.add_reward(rewards, sanctuary_card, condition_reward)
+
+                # 2) Point help:
+                # Reward the sanctuary by the exact number of points another
+                # card loses when this sanctuary is removed.
+                if points is not None:
+                    points_with = self.points_with_totals(
+                        cards,
+                        helped_card,
+                        full_totals,
+                    )
+                    points_without = self.points_with_totals(
+                        cards,
+                        helped_card,
+                        totals_without_sanctuary,
+                    )
+
+                    point_difference = points_with - points_without
+
+                    if point_difference > 0:
+                        self.add_reward(rewards, sanctuary_card, point_difference)
 
     def resource_providers(self, player, cards, resource_index):
         providers = []
@@ -524,6 +637,11 @@ class AI:
                 cards,
                 totals,
             )
+
+        # Extra learning signal:
+        # sanctuary cards get direct reward when removing that sanctuary would
+        # make another card lose points or lose a completed condition.
+        self.reward_sanctuary_help_links(rewards, player, cards)
 
         return rewards
 
@@ -1151,108 +1269,6 @@ class Game:
 
         return first_card, second_card
 
-
-def evaluate_ai(ai, test_games=20000):
-    """Evaluate the learned AI with epsilon = 0.
-
-    This measures the AI without exploration/random mistakes.
-    It does not train, does not update epsilon, and does not save new memory.
-    """
-    training_epsilon = ai.epsilon
-    saved_history = ai.history.copy()
-
-    ai.epsilon = 0.0
-    ai.history = []
-
-    test_wins = 0
-    test_draws = 0
-    test_losses = 0
-    test_points_1 = []
-    test_points_2 = []
-    test_resources_1 = 0
-    test_resources_2 = 0
-
-    for _ in range(test_games):
-        game = Game()
-        game.reset()
-        game.ai = ai
-
-        while game.get_nb_turns_left() > 0:
-            game.cards.refill_board()
-
-            # --- Play phase ---
-            p1_index = ai.choose_action(game.player1, game, "play")
-            p2_index = random.randrange(len(game.player2.cards_in_hand))
-
-            game.play_phase(p1_index, p2_index)
-
-            # --- Pick phase ---
-            if game.first_picker == game.player1:
-                first_choice = ai.choose_action(game.player1, game, "pick")
-
-                remaining_board = game.cards.cards_on_board.copy()
-                remaining_board.pop(first_choice)
-                second_choice = random.randrange(len(remaining_board))
-            else:
-                first_choice = random.randrange(len(game.cards.cards_on_board))
-
-                remaining_board = game.cards.cards_on_board.copy()
-                remaining_board.pop(first_choice)
-
-                second_choice = ai.choose_action(
-                    game.player1,
-                    game,
-                    "pick",
-                    available_cards=remaining_board,
-                )
-
-            game.draw_phase(first_choice, second_choice)
-            game.set_turns()
-
-        points_player1 = game.player1.calculate_points(game.cards)
-        points_player2 = game.player2.calculate_points(game.cards)
-
-        test_points_1.append(points_player1)
-        test_points_2.append(points_player2)
-        test_resources_1 += game.player1.get_total_ressources(game)
-        test_resources_2 += game.player2.get_total_ressources(game)
-
-        if points_player1 > points_player2:
-            test_wins += 1
-        elif points_player1 == points_player2:
-            test_draws += 1
-        else:
-            test_losses += 1
-
-    total = test_wins + test_draws + test_losses
-
-    print()
-    print("EVALUATION WITHOUT RANDOMNESS")
-    print("test games:", test_games)
-    print("epsilon used for evaluation:", ai.epsilon)
-    print("mean PLAYER 1:", np.mean(test_points_1))
-    print("mean PLAYER 2:", np.mean(test_points_2))
-    print("median PLAYER 1:", np.median(test_points_1))
-    print("median PLAYER 2:", np.median(test_points_2))
-    print("resources PLAYER 1:", test_resources_1 / test_games)
-    print("resources PLAYER 2:", test_resources_2 / test_games)
-    print(f"Win: {test_wins / total * 100:.1f}% Draw: {test_draws / total * 100:.1f}% Loss: {test_losses / total * 100:.1f}%")
-    print()
-
-    # Restore training values so evaluation does not affect the saved AI.
-    ai.epsilon = training_epsilon
-    ai.history = saved_history
-
-    return {
-        "mean_player1": float(np.mean(test_points_1)),
-        "mean_player2": float(np.mean(test_points_2)),
-        "median_player1": float(np.median(test_points_1)),
-        "median_player2": float(np.median(test_points_2)),
-        "win_rate": test_wins / total,
-        "draw_rate": test_draws / total,
-        "loss_rate": test_losses / total,
-    }
-
 if __name__ == "__main__":
     wins = 0
     draws = 0
@@ -1265,7 +1281,7 @@ if __name__ == "__main__":
     total_points_2 = 0
     resources_1 = 0
     resources_2 = 0
-    total_games = 1000000
+    total_games = 200000
     while nb_game < total_games:
         nb_game = nb_game + 1
         game = Game()
@@ -1333,7 +1349,7 @@ if __name__ == "__main__":
                 ai.learn_from_links(game.player1, game.cards)
                 ai.update_epsilon()
 
-        if nb_game % 50000 == 0:
+        if nb_game % 10000 == 0:
             total = wins + draws + losses
             print(f"{nb_game/total_games*100:.1f}% | epsilon: {ai.epsilon:.4f} | resources_1: {resources_1/nb_game} | resources_2: {resources_2/nb_game} | epsilon: {ai.epsilon:.4f} | Q-table: {len(ai.q_table)} | card-values: {len(ai.card_values)} | Win: {wins/total*100:.1f}% Draw: {draws/total*100:.1f}% Loss: {losses/total*100:.1f}%")
             wins = draws = losses = 0  # reset for next window
@@ -1351,11 +1367,6 @@ if __name__ == "__main__":
     print("median PLAYER 2: ", np.median(list_points_2))
     print("min: ", np.min(list_points_1))
     print("min: ", np.min(list_points_2))
-
-    # Test the trained AI without random exploration.
-    # This does not change the saved memory.
-    evaluate_ai(ai, test_games=20000)
-
     bins = list(range(0, 101, 5))  # 0, 10, 20, ..., 100
 
     counts_1 = []
