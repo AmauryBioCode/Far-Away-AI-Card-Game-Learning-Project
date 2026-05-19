@@ -177,7 +177,25 @@ class AI:
         # "I already have card A, and candidate card B supports it."
         # This is what lets the AI learn combinations, not only individual cards.
         self.link_values = {}
-        self.context_link_weight = 0.75
+
+        # Context links are now ADDED, not averaged.
+        # This means a card with 3 useful links can be better than a card with
+        # only 1 useful link.
+        self.context_link_weight = 1.00
+
+        # Extra reward multiplier when a chosen card had several useful context
+        # links at the moment it was chosen.
+        # Example: 4 useful links -> reward * (1 + 4 * 0.12) = reward * 1.48
+        # The cap prevents huge explosions late in the game.
+        self.multi_link_bonus_per_link = 0.12
+        self.multi_link_bonus_cap = 1.00
+        self.rewarded_context_link_count = 0
+
+        # Penalty is now conservative: it applies ONLY when the card/sanctuary
+        # created no useful context link at all after the first turn, and only
+        # if it also received no positive final reward.
+        self.useless_choice_penalty = -0.10
+        self.useless_penalty_count = 0
 
         self.epsilon = 1.0
         self.load_memory()
@@ -379,16 +397,85 @@ class AI:
 
         return keys
 
+    def context_link_count_bonus(self, context_link_count):
+        """Return a small multiplier bonus for choices with many useful links.
+
+        More useful links should be better, but the bonus is capped so the AI
+        does not overvalue one card only because many context cards exist late
+        in the game.
+        """
+        if context_link_count <= 0:
+            return 0.0
+
+        return min(
+            self.multi_link_bonus_cap,
+            context_link_count * self.multi_link_bonus_per_link,
+        )
+
+    def has_relevant_context_to_help(self, player, game):
+        """Return True when there is already something useful to support.
+
+        The useless-choice penalty should not apply just because there are no
+        possible links yet. It applies only when the AI already has a played card
+        or sanctuary card that could be supported:
+            - an unfinished condition card
+            - a scoring card based on resources, color, night, or parchment
+
+        Fixed-point cards like ["points", 5] are ignored because they do not
+        need support from another card.
+        """
+        if game.get_nb_turns_left() == 8:
+            # First turn: do not punish exploration.
+            return False
+
+        current_resources = self.current_resource_totals(player, game)
+        context_cards = player.cards_played + player.sanctuary_in_hand
+
+        for existing_card in context_cards:
+            existing_data = self.get_card_data(game, existing_card)
+
+            condition = existing_data.get("condition")
+            if condition is not None:
+                missing = [
+                    max(0, condition[i] - current_resources[i])
+                    for i in range(3)
+                ]
+                if any(missing):
+                    return True
+
+            points = existing_data.get("points")
+            if points is not None and points[0] != "points":
+                return True
+
+        return False
+
+    def should_apply_useless_penalty(self, player, game, context_link_keys):
+        """Return True when the chosen card deserves the small no-link penalty.
+
+        This is checked at the moment the AI chooses a card or sanctuary.
+        The penalty applies only after the first turn, only if there was already
+        a condition/point card to support, and only if the chosen card created no
+        condition link and no point-type link.
+        """
+        return (
+            game.get_nb_turns_left() < 8
+            and self.has_relevant_context_to_help(player, game)
+            and len(context_link_keys) == 0
+        )
+
     def context_link_value(self, player, game, mode, card_number):
-        """Estimated value of learned links between current context and candidate."""
+        """Estimated value of learned links between current context and candidate.
+
+        Important change: this is now a SUM, not an average.
+        So if a candidate supports several already-played cards, all those
+        learned links increase the candidate value.
+        """
         keys = self.context_link_keys(player, game, mode, card_number)
 
         if not keys:
             return 0.0
 
-        # Average avoids making the value explode when many context cards exist.
-        total = sum(self.link_values.get(key, 0.0) for key in keys)
-        return total / len(keys)
+        return sum(self.link_values.get(key, 0.0) for key in keys)
 
     def estimated_value(self, player, game, mode, card_number):
         state_key = self.make_key(player, game, mode, card_number)
@@ -401,6 +488,13 @@ class AI:
         return base_value + card_value + self.context_link_weight * link_value
 
     def remember_choice(self, player, game, mode, card_number):
+        context_keys = self.context_link_keys(player, game, mode, card_number)
+        no_link_penalty_candidate = self.should_apply_useless_penalty(
+            player,
+            game,
+            context_keys,
+        )
+
         self.history.append({
             "card": str(card_number),
             "mode": mode,
@@ -408,8 +502,14 @@ class AI:
             "feature_key": (mode, self.card_features(game, card_number)),
 
             # Context links that existed at the moment of the choice.
-            # These links get reward only if the chosen card later proves useful.
-            "context_link_keys": self.context_link_keys(player, game, mode, card_number),
+            # If the card later proves useful, having more links gives a larger
+            # reward and all those links learn positive value.
+            "context_link_keys": context_keys,
+
+            # Conservative penalty flag. It is applied later ONLY if the card
+            # got no positive final reward. A useful card is never punished just
+            # because it did not help every possible link.
+            "no_link_penalty_candidate": no_link_penalty_candidate,
         })
 
     def choose_action(self, player, game, mode, available_cards=None):
@@ -819,7 +919,29 @@ class AI:
         card_rewards = self.compute_link_rewards(player, cards)
 
         for entry in self.history:
-            reward = card_rewards.get(entry["card"], 0.0)
+            positive_reward = card_rewards.get(entry["card"], 0.0)
+            context_keys = entry.get("context_link_keys", [])
+            context_link_count = len(context_keys)
+
+            if positive_reward > 0:
+                # More useful links -> more reward.
+                # This is the important change: a card that supported several
+                # conditions/point cards gets a stronger learning signal than a
+                # card that supported only one.
+                link_bonus = self.context_link_count_bonus(context_link_count)
+                reward = positive_reward * (1.0 + link_bonus)
+
+                if context_link_count > 0:
+                    self.rewarded_context_link_count += context_link_count
+
+            elif entry.get("no_link_penalty_candidate", False):
+                # Small penalty only for choices that helped nothing and also
+                # ended the game with no positive link reward.
+                reward = self.useless_choice_penalty
+                self.useless_penalty_count += 1
+
+            else:
+                reward = 0.0
 
             old_q = self.q_table.get(entry["state_key"], 0.0)
             self.q_table[entry["state_key"]] = old_q + self.learning_rate * (reward - old_q)
@@ -827,11 +949,11 @@ class AI:
             old_card_value = self.card_values.get(entry["feature_key"], 0.0)
             self.card_values[entry["feature_key"]] = old_card_value + self.learning_rate * (reward - old_card_value)
 
-            # Learn whether this candidate card was good in the context where it
-            # was chosen. If the card later helped score, all matching context
-            # links receive positive reward. If it did not help, those links move
-            # back toward zero.
-            for context_key in entry.get("context_link_keys", []):
+            # Learn whether this candidate card was good in the context where
+            # it was chosen. Each useful context link receives the same boosted
+            # reward. Because future link values are summed, more learned links
+            # make a candidate more attractive.
+            for context_key in context_keys:
                 old_link_value = self.link_values.get(context_key, 0.0)
                 self.link_values[context_key] = old_link_value + self.learning_rate * (reward - old_link_value)
 
@@ -1528,7 +1650,7 @@ if __name__ == "__main__":
 
         if nb_game % 10000 == 0:
             total = wins + draws + losses
-            print(f"{nb_game/total_games*100:.1f}% | epsilon: {ai.epsilon:.4f} | resources_1: {resources_1/nb_game} | resources_2: {resources_2/nb_game} | epsilon: {ai.epsilon:.4f} | Q-table: {len(ai.q_table)} | card-values: {len(ai.card_values)} | link-values: {len(ai.link_values)} | Win: {wins/total*100:.1f}% Draw: {draws/total*100:.1f}% Loss: {losses/total*100:.1f}%")
+            print(f"{nb_game/total_games*100:.1f}% | epsilon: {ai.epsilon:.4f} | resources_1: {resources_1/nb_game} | resources_2: {resources_2/nb_game} | epsilon: {ai.epsilon:.4f} | Q-table: {len(ai.q_table)} | card-values: {len(ai.card_values)} | link-values: {len(ai.link_values)} | rewarded-links: {ai.rewarded_context_link_count} | no-link penalties: {ai.useless_penalty_count} | Win: {wins/total*100:.1f}% Draw: {draws/total*100:.1f}% Loss: {losses/total*100:.1f}%")
             wins = draws = losses = 0  # reset for next window
 
                 
