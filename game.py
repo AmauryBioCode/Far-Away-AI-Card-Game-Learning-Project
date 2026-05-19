@@ -145,34 +145,50 @@ sanctuary_data = {
 }
 
 class AI:
-    """Rule-based AI for your new strategy.
+    """Rule-based AI with condition strategy, point-type tie-breaks, and final-turn scoring.
 
     Strategy:
     1. Rounds 1 and 2:
        - play and pick the card with the biggest condition.
-       - "Biggest condition" means the largest sum of required resources.
-         Example: [2, 1, 0] has value 3.
 
-    2. Rounds 3 to 8:
-       - look at the AI cards already played.
-       - find condition cards whose conditions are not completed yet.
-       - choose cards that give the missing resources for those conditions.
-       - if there is no unfinished condition, fall back to most total resources.
+    2. Rounds 3 to 7:
+       - play and pick resources that help complete unfinished conditions.
+       - if several cards are tied, use the point-types of cards already played
+         to decide what kind of card is most useful. This tie-break is not used
+         on round 1 and not used on the final turn.
 
-    Tie-break:
-    - If several cards have the same score, choose the smallest card number
-      that is higher than the last card played.
-    - If none is higher than the last card played, choose the smallest card number.
+    3. Round 8, the last turn:
+       - ignore the old condition/resource strategy for playing.
+       - test every card in hand and play the one that gives the highest final score.
+
+    Tie-break after the point-type logic:
+    - choose the smallest card number higher than the last card played.
+    - if impossible, choose the smallest card number.
     """
 
     COLOR_TO_INT = {"w": 0, "b": 1, "r": 2, "re": 2, "g": 3, "y": 4}
 
-    def __init__(self, filename="ai_memory_v3.pkl"):
+    # Final tie order requested by you.
+    # Lower number = higher priority.
+    POINT_TYPE_PRIORITY = {
+        "pineapple": 0,
+        "dear": 1,
+        "stone": 2,
+        "parchment": 3,
+        "night": 4,
+        "re": 5,
+        "b": 6,
+        "g": 7,
+        "y": 8,
+        "w": 9,
+    }
+
+    def __init__(self, filename="ai_memory_v4.pkl"):
         self.filename = filename
         self.history = []
 
-        # These are kept so the rest of your program still works.
-        # But choose_action() below is now deterministic/rule-based.
+        # Kept so the rest of your program still works.
+        # choose_action() is deterministic/rule-based.
         self.epsilon_min = 0.05
         self.epsilon_decay = 0.999995
 
@@ -198,7 +214,6 @@ class AI:
 
     def update_epsilon(self):
         # Kept for compatibility with your main loop.
-        # The AI is rule-based now, so epsilon is not used in choose_action().
         if self.epsilon > self.epsilon_min:
             self.epsilon *= self.epsilon_decay
 
@@ -222,6 +237,9 @@ class AI:
         turns_left = 1 -> round 8
         """
         return 9 - game.get_nb_turns_left()
+
+    def is_last_turn(self, game):
+        return game.get_nb_turns_left() == 1
 
     def condition_score(self, game, card_number):
         """How big the card condition is.
@@ -250,16 +268,7 @@ class AI:
         return resources
 
     def get_unfinished_condition_need(self, player, game):
-        """Return the missing resources for condition cards already played.
-
-        Example:
-        current resources = [1, 0, 0]
-        played condition card needs [2, 1, 0]
-        missing resources = [1, 1, 0]
-
-        If several played condition cards are unfinished, the missing resources
-        are added together.
-        """
+        """Return the missing resources for condition cards already played."""
         current_resources = self.get_current_resources(player, game)
         needed = [0, 0, 0]
 
@@ -275,7 +284,6 @@ class AI:
                 for i in range(3)
             ]
 
-            # Only count cards whose condition is not already completed.
             if any(missing):
                 needed[0] += missing[0]
                 needed[1] += missing[1]
@@ -284,21 +292,15 @@ class AI:
         return needed
 
     def needed_resource_score(self, player, game, card_number):
-        """Score a card by how many missing resources it gives.
-
-        During the last 6 rounds, the AI should not just take any resource.
-        It should prefer resources that help complete unfinished conditions.
-        """
+        """Score a card by how many missing resources it gives."""
         needed = self.get_unfinished_condition_need(player, game)
         card = self.get_card_data(game, card_number)
         resources = card["resources"]
 
-        # If there is no unfinished condition, fall back to the previous behavior:
-        # pick/play the card with the most total resources.
+        # If there is no unfinished condition, fall back to most total resources.
         if sum(needed) == 0:
             return sum(resources)
 
-        # Count only resources that are actually useful for unfinished conditions.
         useful_resources = 0
         for i in range(3):
             useful_resources += min(resources[i], needed[i])
@@ -306,13 +308,25 @@ class AI:
         return useful_resources
 
     def strategic_score(self, player, game, card_number):
-        """Main score used by the AI."""
+        """Main non-final-turn score used by the AI."""
         round_number = self.get_round_number(game)
 
         if round_number <= 2:
             return self.condition_score(game, card_number)
 
         return self.needed_resource_score(player, game, card_number)
+
+    def final_turn_score(self, player, game, card_number):
+        """Score a possible final card by simulating the final points.
+
+        This does not modify the real player. It only tests what the score would
+        be if this card were added to cards_played.
+        """
+        return game.cards.calculate_points_for(
+            player,
+            extra_played_card=card_number,
+            extra_sanctuary=None,
+        )
 
     def card_features(self, game, card_number):
         """Small hashable description of a card for the Q-table history."""
@@ -335,15 +349,8 @@ class AI:
     def make_key(self, player, game, mode, card_number):
         return (player.get_state(game), mode, self.card_features(game, card_number))
 
-    def break_tie(self, player, available_cards, candidate_actions):
-        """Apply your tie-break rule.
-
-        First preference:
-        - the smallest card number higher than the last card played.
-
-        If impossible:
-        - the smallest card number.
-        """
+    def break_tie_by_card_number(self, player, available_cards, candidate_actions):
+        """Apply the original numeric tie-break rule."""
         last_value = int(player.number_last_card)
 
         higher_than_last = [
@@ -362,13 +369,129 @@ class AI:
             key=lambda action: self.card_number_value(available_cards[action])
         )
 
+    def point_type_categories(self, point_type):
+        """Convert a points type into the thing that card wants more of.
+
+        Examples:
+        - ["pineapple", 3] wants pineapple resources.
+        - ["night", 2] wants night cards.
+        - ["bre", 1] wants blue or red cards.
+        - ["gy", 1] wants green or yellow cards.
+        """
+        if point_type in ["pineapple", "dear", "stone", "parchment", "night"]:
+            return [point_type]
+
+        # A "color" card wants color diversity. We let any non-grey color help.
+        if point_type == "color":
+            return ["re", "b", "g", "y"]
+
+        # A "resources" card wants sets of all resources.
+        if point_type == "resources":
+            return ["pineapple", "dear", "stone"]
+
+        categories = []
+        remaining = point_type
+
+        # Your red is sometimes written as "r" in card colors and "re" in points.
+        if "re" in remaining:
+            categories.append("re")
+            remaining = remaining.replace("re", "")
+
+        for color in ["b", "g", "y", "w"]:
+            if color in remaining:
+                categories.append(color)
+
+        return categories
+
+    def played_point_type_stats(self, player, game):
+        """Count what the already-played point cards want.
+
+        Majority rule:
+        - first compare how many played cards want each category.
+        - if tied, compare total point value.
+        - if still tied, use pineapple, dear, stone, parchment, night, rest.
+        """
+        stats = {}
+
+        for c in player.cards_played:
+            card_data = self.get_card_data(game, c)
+            points = card_data.get("points")
+
+            if points is None:
+                continue
+
+            point_type, value = points
+            categories = self.point_type_categories(point_type)
+
+            for category in categories:
+                if category not in stats:
+                    stats[category] = {"count": 0, "value": 0}
+
+                stats[category]["count"] += 1
+                stats[category]["value"] += value
+
+        return stats
+
+    def card_can_help_point_type(self, game, card_number, category):
+        """Return True if this candidate card helps the selected point type."""
+        card = self.get_card_data(game, card_number)
+        resources = card["resources"]
+
+        if category == "pineapple":
+            return resources[2] > 0
+        if category == "dear":
+            return resources[1] > 0
+        if category == "stone":
+            return resources[0] > 0
+        if category == "parchment":
+            return bool(card.get("parchment", False))
+        if category == "night":
+            return bool(card.get("night", False))
+        if category == "re":
+            return card.get("color") in ["r", "re"]
+        if category in ["b", "g", "y", "w"]:
+            return card.get("color") == category
+
+        return False
+
+    def break_tie_by_played_point_types(self, player, game, available_cards, candidate_actions):
+        """Use the point cards already played to break a tie.
+
+        Example:
+        - if most played point cards are ["pineapple", x], choose a tied card
+          that gives pineapple.
+        - if no tied card gives pineapple, try the next best point type.
+        """
+        stats = self.played_point_type_stats(player, game)
+
+        if not stats:
+            return None
+
+        ranked_categories = sorted(
+            stats.keys(),
+            key=lambda category: (
+                -stats[category]["count"],
+                -stats[category]["value"],
+                self.POINT_TYPE_PRIORITY.get(category, 100),
+            )
+        )
+
+        for category in ranked_categories:
+            matching_actions = [
+                action for action in candidate_actions
+                if self.card_can_help_point_type(game, available_cards[action], category)
+            ]
+
+            if matching_actions:
+                return self.break_tie_by_card_number(player, available_cards, matching_actions)
+
+        return None
+
     def choose_action(self, player, game, mode, available_cards=None):
         """Choose an index from available_cards.
 
         For mode == "play", available_cards defaults to the player's hand.
         For mode == "pick", available_cards defaults to the board.
-
-        It returns an INDEX, so it still works with play_card() and draw_phase().
         """
         if mode == "play":
             if available_cards is None:
@@ -385,11 +508,18 @@ class AI:
         if not possible_actions:
             raise ValueError("AI has no available actions")
 
-        scores = []
-        for action in possible_actions:
-            card_number = available_cards[action]
-            score = self.strategic_score(player, game, card_number)
-            scores.append(score)
+        # Last turn: override the old condition/resource strategy for playing.
+        # The AI tests the final points of every card in hand.
+        if player.is_ai and mode == "play" and self.is_last_turn(game):
+            scores = [
+                self.final_turn_score(player, game, available_cards[action])
+                for action in possible_actions
+            ]
+        else:
+            scores = [
+                self.strategic_score(player, game, available_cards[action])
+                for action in possible_actions
+            ]
 
         best_score = max(scores)
 
@@ -398,7 +528,30 @@ class AI:
             if score == best_score
         ]
 
-        best_action = self.break_tie(player, available_cards, candidate_actions)
+        # Every turn except last AND except the first round:
+        # if the AI hesitates, use the point-type majority logic from
+        # the cards already played.
+        use_point_type_tie_break = (
+            player.is_ai
+            and not self.is_last_turn(game)
+            and self.get_round_number(game) > 1
+            and len(candidate_actions) > 1
+        )
+
+        if use_point_type_tie_break:
+            point_type_action = self.break_tie_by_played_point_types(
+                player,
+                game,
+                available_cards,
+                candidate_actions,
+            )
+
+            if point_type_action is not None:
+                best_action = point_type_action
+            else:
+                best_action = self.break_tie_by_card_number(player, available_cards, candidate_actions)
+        else:
+            best_action = self.break_tie_by_card_number(player, available_cards, candidate_actions)
 
         chosen_card = available_cards[best_action]
         self.history.append(self.make_key(player, game, mode, chosen_card))
@@ -406,12 +559,7 @@ class AI:
         return best_action
 
     def learn_small_reward(self, reward):
-        """Kept for compatibility.
-
-        The new AI chooses with rules, not randomness. This still records Q-values
-        if you want to look at them later, but choose_action() does not depend on
-        them anymore.
-        """
+        """Kept for compatibility."""
         if not self.history:
             return
 
@@ -620,7 +768,21 @@ class Cards:
             key=lambda sanctuary_number: self.sanctuary_choice_score(sanctuary_number, player)
         )
 
-    def draw_sanctuary(self, nb_parchment, player=None):
+    def choose_best_final_sanctuary(self, sanctuary_options, player):
+        """Last-turn sanctuary choice for the AI.
+
+        On the final turn, the AI ignores the old condition sanctuary strategy and
+        simply chooses the sanctuary that gives the highest final score.
+        """
+        return max(
+            sanctuary_options,
+            key=lambda sanctuary_number: (
+                self.calculate_points_for(player, extra_sanctuary=sanctuary_number),
+                -int(sanctuary_number),
+            )
+        )
+
+    def draw_sanctuary(self, nb_parchment, player=None, final_turn=False):
         """Draw sanctuary options, then choose the best one.
 
         The number of options is nb_parchment + 1, like before.
@@ -638,6 +800,8 @@ class Cards:
 
         if player is None:
             number = random.choice(sanctuary_drawn)
+        elif final_turn and getattr(player, "is_ai", False):
+            number = self.choose_best_final_sanctuary(sanctuary_drawn, player)
         else:
             number = self.choose_best_sanctuary(sanctuary_drawn, player)
 
@@ -670,6 +834,49 @@ class Cards:
             "color": [card["color"]],
             "night": 1 if card["night"] else 0
         }
+
+    def calculate_points_for(self, player, extra_played_card=None, extra_sanctuary=None):
+        """Pure point simulation used by the AI.
+
+        It calculates what the player's points would be after adding one tested
+        played card and/or one tested sanctuary card.
+
+        Important: this does NOT change player.cards_played, player.sanctuary_in_hand,
+        player.nb_parchment, player.total_resources, or player.points.
+        """
+        played_cards = player.cards_played.copy()
+        sanctuary_cards = player.sanctuary_in_hand.copy()
+        nb_parchment = player.nb_parchment
+
+        if extra_played_card is not None:
+            played_cards.append(extra_played_card)
+            if self.add_parchment(extra_played_card, "card"):
+                nb_parchment += 1
+
+        if extra_sanctuary is not None:
+            sanctuary_cards.append(extra_sanctuary)
+            if self.add_parchment(extra_sanctuary, "sanctuary"):
+                nb_parchment += 1
+
+        total_resources = self.count_resources_sanctuary(sanctuary_cards)
+        points = 0
+
+        for c in reversed(played_cards):
+            c_data = self.count_resources_one_card(self.card_info[c])
+            total_resources["resources"][0] += c_data["resources"][0]
+            total_resources["resources"][1] += c_data["resources"][1]
+            total_resources["resources"][2] += c_data["resources"][2]
+            total_resources["color"].extend(c_data["color"])
+
+            if c_data["night"]:
+                total_resources["night"] += 1
+
+            points += self.count_points(c, total_resources, nb_parchment)
+
+        for s in sanctuary_cards:
+            points += self.count_points(s, total_resources, nb_parchment)
+
+        return points
 
     def count_points(self, c, total_resources, nb_parchment):
         
@@ -799,7 +1006,11 @@ class Player:
             # Only the AI player gets the strategic sanctuary choice.
             # The random opponent keeps the old random sanctuary choice.
             if self.is_ai:
-                sanctuary = cards.draw_sanctuary(self.nb_parchment, player=self)
+                sanctuary = cards.draw_sanctuary(
+                    self.nb_parchment,
+                    player=self,
+                    final_turn=(game.get_nb_turns_left() == 1),
+                )
             else:
                 sanctuary = cards.draw_sanctuary(self.nb_parchment, player=None)
 
