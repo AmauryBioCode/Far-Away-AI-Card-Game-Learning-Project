@@ -474,15 +474,173 @@ class Cards:
         self.card_taken(number)
         return number
     
-    def draw_sanctuary(self, nb_parchment):
-        """Draw a random card from the sanctuary pack and remove it from the pack.
+    def get_card_data(self, number):
+        """Return the data dictionary for a normal card or sanctuary card."""
+        if number in self.card_info:
+            return self.card_info[number]
+        return self.sanctuary_info[str(number)]
 
-        Returns:
-            The number of the card that was drawn."""
-        sanctuary_drawn = []
-        for i in range(nb_parchment + 1):
-            sanctuary_drawn.append(random.choice(self.sanctuary_pack))
-        number = sanctuary_drawn[random.randint(0, len(sanctuary_drawn) - 1)]
+    def get_player_resources_for_conditions(self, player):
+        """Resources the player currently has from sanctuary cards and played cards.
+
+        This is used when choosing a sanctuary card, because the sanctuary should
+        help complete the condition cards that are already played.
+        """
+        total = self.count_resources_sanctuary(player.sanctuary_in_hand)
+        resources = total["resources"].copy()
+
+        for c in player.cards_played:
+            card_data = self.get_card_data(c)
+            resources[0] += card_data["resources"][0]
+            resources[1] += card_data["resources"][1]
+            resources[2] += card_data["resources"][2]
+
+        return resources
+
+    def get_unfinished_condition_cards(self, player):
+        """Return condition cards already played but not completed yet.
+
+        Each result is:
+            (card_number, missing_resources)
+
+        missing_resources uses your normal order:
+            [stone, dear, pineapple]
+        """
+        current_resources = self.get_player_resources_for_conditions(player)
+        unfinished = []
+
+        for c in player.cards_played:
+            card_data = self.get_card_data(c)
+            condition = card_data.get("condition")
+
+            if condition is None:
+                continue
+
+            missing = [
+                max(0, condition[i] - current_resources[i])
+                for i in range(3)
+            ]
+
+            if any(missing):
+                unfinished.append((c, missing))
+
+        return unfinished
+
+    def primary_missing_resource_priority(self, missing):
+        """Priority of the resource still needed by a condition card.
+
+        You asked for this order:
+            pineapple, dear, stone
+
+        Because resources are stored as:
+            [stone, dear, pineapple]
+
+        the priority checks indexes:
+            pineapple = 2
+            dear      = 1
+            stone     = 0
+        """
+        if missing[2] > 0:
+            return 0  # pineapple first
+        if missing[1] > 0:
+            return 1  # dear second
+        if missing[0] > 0:
+            return 2  # stone third
+        return 3
+
+    def sanctuary_choice_score(self, sanctuary_number, player):
+        """Score one sanctuary option.
+
+        The sanctuary tries to help complete unfinished condition cards.
+
+        Priority:
+        1. Help an unfinished condition.
+        2. Complete an unfinished condition.
+        3. Prefer the condition card with the fewest resources still needed.
+        4. If still tied, prefer needs in this order:
+           pineapple, dear, stone.
+        5. Prefer the sanctuary that gives useful resources in that same order.
+        """
+        sanctuary = self.sanctuary_info[str(sanctuary_number)]
+        sanctuary_resources = sanctuary["resources"]
+        unfinished = self.get_unfinished_condition_cards(player)
+
+        # If there is no condition to complete, choose the sanctuary with the
+        # most resources, with pineapple > dear > stone as the tie-break order.
+        if not unfinished:
+            return (
+                0,
+                sum(sanctuary_resources),
+                sanctuary_resources[2],  # pineapple
+                sanctuary_resources[1],  # dear
+                sanctuary_resources[0],  # stone
+                -int(sanctuary_number),
+            )
+
+        best_score_for_this_sanctuary = None
+
+        for condition_card, missing_before in unfinished:
+            missing_after = [
+                max(0, missing_before[i] - sanctuary_resources[i])
+                for i in range(3)
+            ]
+
+            useful = [
+                missing_before[i] - missing_after[i]
+                for i in range(3)
+            ]
+
+            useful_total = sum(useful)
+            completed_after = 1 if sum(missing_after) == 0 else 0
+            resources_still_needed_before = sum(missing_before)
+            resources_still_needed_after = sum(missing_after)
+            priority = self.primary_missing_resource_priority(missing_before)
+
+            score = (
+                1 if useful_total > 0 else 0,
+                completed_after,
+                -resources_still_needed_before,
+                -priority,
+                useful[2],              # useful pineapple
+                useful[1],              # useful dear
+                useful[0],              # useful stone
+                -resources_still_needed_after,
+                -int(sanctuary_number),
+            )
+
+            if best_score_for_this_sanctuary is None or score > best_score_for_this_sanctuary:
+                best_score_for_this_sanctuary = score
+
+        return best_score_for_this_sanctuary
+
+    def choose_best_sanctuary(self, sanctuary_options, player):
+        """Choose the best sanctuary from the drawn sanctuary options."""
+        return max(
+            sanctuary_options,
+            key=lambda sanctuary_number: self.sanctuary_choice_score(sanctuary_number, player)
+        )
+
+    def draw_sanctuary(self, nb_parchment, player=None):
+        """Draw sanctuary options, then choose the best one.
+
+        The number of options is nb_parchment + 1, like before.
+
+        If player is provided, the sanctuary is chosen strategically to help
+        complete the player's played condition cards.
+
+        If player is not provided, it falls back to a random choice.
+        """
+        if len(self.sanctuary_pack) == 0:
+            return None
+
+        nb_options = min(nb_parchment + 1, len(self.sanctuary_pack))
+        sanctuary_drawn = random.sample(self.sanctuary_pack, nb_options)
+
+        if player is None:
+            number = random.choice(sanctuary_drawn)
+        else:
+            number = self.choose_best_sanctuary(sanctuary_drawn, player)
+
         self.sanctuary_taken(number)
         return number
 
@@ -599,11 +757,16 @@ class Cards:
 
 class Player:
     """Represent a player with cards in hand and cards already played."""
-    def __init__(self, cards):
+    def __init__(self, cards, is_ai=False):
         """Initialize a player with 3 cards drawn from the given card deck.
 
         Args:
-            cards: A Cards object used to draw the player's starting hand."""
+            cards: A Cards object used to draw the player's starting hand.
+            is_ai: True only for the AI player. This is used so the AI can
+                choose sanctuary cards strategically while the random opponent
+                still receives random sanctuary cards.
+        """
+        self.is_ai = is_ai
         self.number_last_card = 100
         self.sanctuary_in_hand = []
         self.cards_in_hand = []
@@ -633,7 +796,12 @@ class Player:
             self.nb_parchment = self.nb_parchment + 1
 
         if self.number_last_card < int(number):
-            sanctuary = cards.draw_sanctuary(self.nb_parchment)
+            # Only the AI player gets the strategic sanctuary choice.
+            # The random opponent keeps the old random sanctuary choice.
+            if self.is_ai:
+                sanctuary = cards.draw_sanctuary(self.nb_parchment, player=self)
+            else:
+                sanctuary = cards.draw_sanctuary(self.nb_parchment, player=None)
 
             if sanctuary is not None:
                 self.sanctuary_in_hand.append(sanctuary)
@@ -745,8 +913,8 @@ class Game:
         Creates a new card deck, initializes two players, sets player 1 as the
         current player, and resets the number of turns left."""
         self.cards = Cards()
-        self.player1 = Player(self.cards)
-        self.player2 = Player(self.cards)
+        self.player1 = Player(self.cards, is_ai=True)
+        self.player2 = Player(self.cards, is_ai=False)
         self.current_player = self.player1
         self.turns_left = 8
     
