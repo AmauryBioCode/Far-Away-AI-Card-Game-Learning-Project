@@ -172,6 +172,13 @@ class AI:
 
         self.q_table = {}
         self.card_values = {}
+
+        # Learned values for contextual links:
+        # "I already have card A, and candidate card B supports it."
+        # This is what lets the AI learn combinations, not only individual cards.
+        self.link_values = {}
+        self.context_link_weight = 0.75
+
         self.epsilon = 1.0
         self.load_memory()
 
@@ -182,16 +189,19 @@ class AI:
                 self.epsilon = data.get("epsilon", 1.0)
                 self.q_table = data.get("q_table", {})
                 self.card_values = data.get("card_values", {})
+                self.link_values = data.get("link_values", {})
         except FileNotFoundError:
             self.epsilon = 1.0
             self.q_table = {}
             self.card_values = {}
+            self.link_values = {}
 
     def save_memory(self):
         data = {
             "epsilon": self.epsilon,
             "q_table": self.q_table,
             "card_values": self.card_values,
+            "link_values": self.link_values,
         }
         with open(self.filename, "wb") as file:
             pickle.dump(data, file)
@@ -230,10 +240,165 @@ class AI:
     def make_key(self, player, game, mode, card_number):
         return (player.get_state(game), mode, self.card_features(game, card_number))
 
+    def current_resource_totals(self, player, game):
+        """Resources the player already has before choosing the candidate card.
+
+        This is used only to detect whether a candidate card helps an unfinished
+        condition that is already on the table.
+        """
+        resources = game.cards.count_resources_sanctuary(player.sanctuary_in_hand)["resources"].copy()
+
+        for c in player.cards_played:
+            card_data = self.get_card_data(game, c)
+            resources[0] += card_data["resources"][0]
+            resources[1] += card_data["resources"][1]
+            resources[2] += card_data["resources"][2]
+
+        return resources
+
+    def categories_from_point_type(self, point_type):
+        """Convert point types into the things that can support them.
+
+        Examples:
+            "pineapple" -> ["pineapple"]
+            "night"     -> ["night"]
+            "yre"       -> ["y", "re"]
+            "color"     -> ["b", "g", "y", "re"]
+        """
+        if point_type in ["stone", "dear", "pineapple", "parchment", "night"]:
+            return [point_type]
+
+        if point_type == "resources":
+            return ["stone", "dear", "pineapple"]
+
+        if point_type == "color":
+            return ["b", "g", "y", "re"]
+
+        categories = []
+        remaining = point_type
+
+        if "re" in remaining:
+            categories.append("re")
+            remaining = remaining.replace("re", "")
+
+        for color in ["b", "g", "y", "w"]:
+            if color in remaining:
+                categories.append(color)
+
+        return categories
+
+    def candidate_matches_category(self, candidate_data, category):
+        """Return True when the candidate card supports this scoring category."""
+        resources = candidate_data["resources"]
+
+        if category == "stone":
+            return resources[0] > 0
+        if category == "dear":
+            return resources[1] > 0
+        if category == "pineapple":
+            return resources[2] > 0
+        if category == "parchment":
+            return candidate_data.get("parchment", False)
+        if category == "night":
+            return candidate_data.get("night", False)
+        if category == "re":
+            return candidate_data.get("color") in ["r", "re"]
+
+        # b, g, y, w
+        return candidate_data.get("color") == category
+
+    def context_link_keys(self, player, game, mode, candidate_card):
+        """Return learned context-link keys for this possible choice.
+
+        This does not force a strategy. It only says which links are possible.
+        The values of these links are learned later from rewards.
+
+        Examples of learned links:
+            - condition card needing dear + candidate giving dear
+            - ["night", 3] card already played + candidate with night=True
+            - ["parchment", 4] card already played + candidate with parchment=True
+            - color scorer already played + candidate with matching color
+        """
+        candidate_data = self.get_card_data(game, candidate_card)
+        candidate_features = self.card_features(game, candidate_card)
+        current_resources = self.current_resource_totals(player, game)
+
+        keys = []
+
+        # Use cards already placed/owned as the context.
+        # cards_played is the most important part. sanctuary_in_hand is included
+        # because a sanctuary can also be a scoring card or support future links.
+        context_cards = player.cards_played + player.sanctuary_in_hand
+
+        for existing_card in context_cards:
+            if str(existing_card) == str(candidate_card):
+                continue
+
+            existing_data = self.get_card_data(game, existing_card)
+            existing_features = self.card_features(game, existing_card)
+
+            # 1) Candidate helps an unfinished condition already played/owned.
+            condition = existing_data.get("condition")
+            if condition is not None:
+                missing = [
+                    max(0, condition[i] - current_resources[i])
+                    for i in range(3)
+                ]
+
+                useful_resources = [
+                    min(candidate_data["resources"][i], missing[i])
+                    for i in range(3)
+                ]
+
+                for resource_index, useful_amount in enumerate(useful_resources):
+                    if useful_amount > 0:
+                        resource_name = ["stone", "dear", "pineapple"][resource_index]
+                        keys.append((
+                            mode,
+                            "condition",
+                            resource_name,
+                            existing_features,
+                            candidate_features,
+                        ))
+
+            # 2) Candidate matches how an already played/owned card makes points.
+            points = existing_data.get("points")
+            if points is not None:
+                point_type, value = points
+
+                if point_type != "points":
+                    for category in self.categories_from_point_type(point_type):
+                        if self.candidate_matches_category(candidate_data, category):
+                            keys.append((
+                                mode,
+                                "points",
+                                category,
+                                existing_features,
+                                candidate_features,
+                            ))
+
+        return keys
+
+    def context_link_value(self, player, game, mode, card_number):
+        """Estimated value of learned links between current context and candidate."""
+        keys = self.context_link_keys(player, game, mode, card_number)
+
+        if not keys:
+            return 0.0
+
+        # Average avoids making the value explode when many context cards exist.
+        total = sum(self.link_values.get(key, 0.0) for key in keys)
+        return total / len(keys)
+
     def estimated_value(self, player, game, mode, card_number):
         state_key = self.make_key(player, game, mode, card_number)
         feature_key = (mode, self.card_features(game, card_number))
-        return self.q_table.get(state_key, 0.0) + self.card_values.get(feature_key, 0.0)
+
+        base_value = self.q_table.get(state_key, 0.0)
+        card_value = self.card_values.get(feature_key, 0.0)
+        link_value = self.context_link_value(player, game, mode, card_number)
+
+        return base_value + card_value + self.context_link_weight * link_value
 
     def remember_choice(self, player, game, mode, card_number):
         self.history.append({
@@ -241,6 +406,10 @@ class AI:
             "mode": mode,
             "state_key": self.make_key(player, game, mode, card_number),
             "feature_key": (mode, self.card_features(game, card_number)),
+
+            # Context links that existed at the moment of the choice.
+            # These links get reward only if the chosen card later proves useful.
+            "context_link_keys": self.context_link_keys(player, game, mode, card_number),
         })
 
     def choose_action(self, player, game, mode, available_cards=None):
@@ -657,6 +826,14 @@ class AI:
 
             old_card_value = self.card_values.get(entry["feature_key"], 0.0)
             self.card_values[entry["feature_key"]] = old_card_value + self.learning_rate * (reward - old_card_value)
+
+            # Learn whether this candidate card was good in the context where it
+            # was chosen. If the card later helped score, all matching context
+            # links receive positive reward. If it did not help, those links move
+            # back toward zero.
+            for context_key in entry.get("context_link_keys", []):
+                old_link_value = self.link_values.get(context_key, 0.0)
+                self.link_values[context_key] = old_link_value + self.learning_rate * (reward - old_link_value)
 
         total_link_reward = sum(card_rewards.values())
         self.history = []
@@ -1351,7 +1528,7 @@ if __name__ == "__main__":
 
         if nb_game % 10000 == 0:
             total = wins + draws + losses
-            print(f"{nb_game/total_games*100:.1f}% | epsilon: {ai.epsilon:.4f} | resources_1: {resources_1/nb_game} | resources_2: {resources_2/nb_game} | epsilon: {ai.epsilon:.4f} | Q-table: {len(ai.q_table)} | card-values: {len(ai.card_values)} | Win: {wins/total*100:.1f}% Draw: {draws/total*100:.1f}% Loss: {losses/total*100:.1f}%")
+            print(f"{nb_game/total_games*100:.1f}% | epsilon: {ai.epsilon:.4f} | resources_1: {resources_1/nb_game} | resources_2: {resources_2/nb_game} | epsilon: {ai.epsilon:.4f} | Q-table: {len(ai.q_table)} | card-values: {len(ai.card_values)} | link-values: {len(ai.link_values)} | Win: {wins/total*100:.1f}% Draw: {draws/total*100:.1f}% Loss: {losses/total*100:.1f}%")
             wins = draws = losses = 0  # reset for next window
 
                 
@@ -1366,7 +1543,7 @@ if __name__ == "__main__":
     print("median PLAYER 1: ", np.median(list_points_1))
     print("median PLAYER 2: ", np.median(list_points_2))
     print("min: ", np.min(list_points_1))
-    print("min: ", np.min(list_points_2))
+    print("max: ", np.max(list_points_1))
     bins = list(range(0, 101, 5))  # 0, 10, 20, ..., 100
 
     counts_1 = []
