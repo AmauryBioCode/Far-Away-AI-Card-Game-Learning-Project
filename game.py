@@ -2,11 +2,6 @@ import random
 import numpy as np
 import matplotlib.pyplot as plt
 import pickle
-import torch
-import torch.nn as nn
-import torch.optim as optim
-from collections import deque
-import time
 
 #[x,x,x] = [stone, dear, pineapple]
 #color: grey (w), blue (b), red (r), green (g) j'ai choisi w comme white pour gris car g est déjà pris par green
@@ -149,146 +144,168 @@ sanctuary_data = {
     "153": {"resources": [0, 0, 0], "parchment": False, "color": "w", "night": False, "points": ["points", 5]},
 }
 
-class DQN(nn.Module):
-    def __init__(self, input_size, output_size):
-        super(DQN, self).__init__()
-        self.net = nn.Sequential(
-            nn.Linear(input_size, 128),
-            nn.ReLU(),
-            nn.Linear(128, 128),
-            nn.ReLU(),
-            nn.Linear(128, output_size)
-        )
-    
-    def forward(self, x):
-        return self.net(x)
-
 class AI:
-    def __init__(self, filename="ai_memory.pt"):
+    """Card-aware AI.
+
+    Important idea:
+    The AI must not learn that "action 0" is good, because action 0 is a
+    different card every turn. Instead, the Q-table key contains the features
+    of the card that action points to.
+    """
+
+    COLOR_TO_INT = {"w": 0, "b": 1, "r": 2, "re": 2, "g": 3, "y": 4}
+
+    def __init__(self, filename="ai_memory_v2.pkl"):
         self.filename = filename
-        self.history_p1 = []
-        self.history_p2 = []
+        self.history = []
+
         self.epsilon_min = 0.05
         self.epsilon_decay = 0.999995
-        self.epsilon = 0.5
-        self.gamma = 0.95
-        self.lr = 0.001
-        self.replay_buffer = deque(maxlen=50000)
-        self.batch_size = 64
 
-        self.input_size = 78
-        # max 3 actions (play or pick)
-        self.output_size = 3
+        # This makes the AI prefer resource-rich cards immediately, even before
+        # the Q-table has learned anything. Increase this if you want it to care
+        # even more about resources.
+        self.resource_weight = 1.0
 
-        self.model = DQN(self.input_size, self.output_size)
-        self.optimizer = optim.Adam(self.model.parameters(), lr=self.lr)
-        self.loss_fn = nn.MSELoss()
+        self.q_table = self.load_memory()
 
-        self.load_memory()
+    def load_memory(self):
+        try:
+            with open(self.filename, "rb") as file:
+                data = pickle.load(file)
+                self.epsilon = data.get("epsilon", 0.5)
+                return data.get("q_table", {})
+        except FileNotFoundError:
+            self.epsilon = 0.5
+            return {}
 
-    def state_to_tensor(self, state):
-        #turns_left, res, night, parchment, h_stone, h_dear, h_pine, h_cond, h_pts, h_night = state
-        #flat = [turns_left, res[0], res[1], res[2], night, parchment, h_stone, h_dear, h_pine, h_cond, h_pts, h_night]
-        return torch.tensor(state, dtype=torch.float32)
-    
-
-    def choose_action(self, player, game, mode, player_id="p1", nb_actions=None):
-        state = player.get_state(game)
-        history = self.history_p1 if player_id == "p1" else self.history_p2
-
-        if mode == "play":
-            possible_actions = list(range(len(player.cards_in_hand)))
-        elif mode == "pick":
-            if nb_actions is None:
-                nb_actions = len(game.cards.cards_on_board)
-            possible_actions = list(range(nb_actions))
-
-        if random.random() < self.epsilon:
-            action = random.choice(possible_actions)
-            history.append((state, mode, action))
-            return action
-
-        with torch.no_grad():
-            q_values = self.model(self.state_to_tensor(state))
-
-        valid_actions = [a for a in possible_actions if a < self.output_size]
-        if not valid_actions:
-            valid_actions = possible_actions
-
-        best_action = max(valid_actions, key=lambda a: q_values[a].item())
-        history.append((state, mode, best_action))
-        return best_action
-
-    def store_transition(self, state, action, reward, next_state, done):
-        self.replay_buffer.append((state, action, reward, next_state, done))
-
-    def train_step(self):
-        if len(self.replay_buffer) < self.batch_size:
-            return
-
-        batch = random.sample(self.replay_buffer, self.batch_size)
-        states, actions, rewards, next_states, dones = zip(*batch)
-
-        states_t = torch.stack([self.state_to_tensor(s) for s in states])
-        next_states_t = torch.stack([self.state_to_tensor(s) for s in next_states])
-        actions_t = torch.tensor(actions, dtype=torch.long)
-        rewards_t = torch.tensor(rewards, dtype=torch.float32)
-        dones_t = torch.tensor(dones, dtype=torch.float32)
-
-        current_q = self.model(states_t).gather(1, actions_t.unsqueeze(1)).squeeze(1)
-
-        with torch.no_grad():
-            next_q = self.model(next_states_t).max(1)[0]
-            target_q = rewards_t + self.gamma * next_q * (1 - dones_t)
-
-        loss = self.loss_fn(current_q, target_q)
-        self.optimizer.zero_grad()
-        loss.backward()
-        self.optimizer.step()
-
-    def learn_small_reward(self, reward, next_state, player_id="p1"):
-        history = self.history_p1 if player_id == "p1" else self.history_p2
-        if len(history) == 0:
-            return
-
-        state, mode, action = history[-1]
-        action = min(action, self.output_size - 1)
-
-        self.store_transition(state, action, reward, next_state, done=0)
-        self.train_step()
-
-    def learn_final_reward(self, reward, player_id="p1"):
-        history = self.history_p1 if player_id == "p1" else self.history_p2
-        if len(history) == 0:
-            return
-        state, mode, action = history[-1]
-        action = min(action, self.output_size - 1)
-        self.store_transition(state, action, reward, state, done=1)
-        self.train_step()
-        if player_id == "p1":
-            self.history_p1 = []
-        else:
-            self.history_p2 = []
+    def save_memory(self):
+        data = {
+            "q_table": self.q_table,
+            "epsilon": self.epsilon,
+        }
+        with open(self.filename, "wb") as file:
+            pickle.dump(data, file)
 
     def update_epsilon(self):
         if self.epsilon > self.epsilon_min:
             self.epsilon *= self.epsilon_decay
 
-    def save_memory(self):
-        torch.save({
-            "model": self.model.state_dict(),
-            "optimizer": self.optimizer.state_dict(),
-            "epsilon": self.epsilon
-        }, self.filename)
+    def get_card_data(self, game, card_number):
+        """Return the data dictionary for a normal card or sanctuary card."""
+        if card_number in game.cards.card_info:
+            return game.cards.card_info[card_number]
+        return game.cards.sanctuary_info[str(card_number)]
 
-    def load_memory(self):
-        try:
-            data = torch.load(self.filename)
-            self.model.load_state_dict(data["model"])
-            self.optimizer.load_state_dict(data["optimizer"])
-            self.epsilon = data["epsilon"]
-        except FileNotFoundError:
-            pass
+    def card_resource_score(self, game, card_number):
+        """What you said you want: prefer cards with the most resources."""
+        return sum(self.get_card_data(game, card_number)["resources"])
+
+    def card_features(self, game, card_number):
+        """Small hashable description of a card for the Q-table.
+
+        This is the fix: the AI now knows what kind of card it is choosing.
+        """
+        card = self.get_card_data(game, card_number)
+
+        resources = tuple(card["resources"])
+        condition = tuple(card.get("condition") or (-1, -1, -1))
+        points = card.get("points") or ("none", 0)
+
+        return (
+            resources,
+            int(card.get("parchment", False)),
+            self.COLOR_TO_INT.get(card.get("color"), -1),
+            int(card.get("night", False)),
+            condition,
+            points[0],
+            points[1],
+        )
+
+    def make_key(self, player, game, mode, card_number):
+        """Key used by the Q-table.
+
+        Old code used: (state, mode, action_index)
+        New code uses: (state, mode, chosen_card_features)
+        """
+        return (player.get_state(game), mode, self.card_features(game, card_number))
+
+    def choose_action(self, player, game, mode, available_cards=None):
+        """Choose an index from available_cards.
+
+        For mode == "play", available_cards defaults to the player's hand.
+        For mode == "pick", available_cards defaults to the board.
+
+        The function returns an INDEX, so it still works with play_card() and
+        draw_phase(). But internally the AI evaluates the actual card at that
+        index, not only the index number.
+        """
+        if mode == "play":
+            if available_cards is None:
+                available_cards = player.cards_in_hand
+        elif mode == "pick":
+            if available_cards is None:
+                available_cards = game.cards.cards_on_board
+        else:
+            raise ValueError(f"Unknown mode: {mode}")
+
+        possible_actions = list(range(len(available_cards)))
+        if not possible_actions:
+            raise ValueError("AI has no available actions")
+
+        # Exploration: sometimes choose randomly so the Q-table can learn.
+        if random.random() < self.epsilon:
+            action = random.choice(possible_actions)
+            chosen_card = available_cards[action]
+            self.history.append(self.make_key(player, game, mode, chosen_card))
+            return action
+
+        # Exploitation: choose the card with the best estimated value.
+        # The resource_weight makes it pick high-resource cards immediately.
+        best_action = None
+        best_value = -float("inf")
+
+        for action in possible_actions:
+            card_number = available_cards[action]
+            key = self.make_key(player, game, mode, card_number)
+
+            learned_value = self.q_table.get(key, 0.0)
+            resource_value = self.card_resource_score(game, card_number)
+            value = learned_value + self.resource_weight * resource_value
+
+            # Small random tie-breaker, useful when cards have equal resources.
+            value += random.random() * 0.000001
+
+            if value > best_value:
+                best_value = value
+                best_action = action
+
+        chosen_card = available_cards[best_action]
+        self.history.append(self.make_key(player, game, mode, chosen_card))
+        return best_action
+
+    def learn_small_reward(self, reward):
+        """Update the last decision using an immediate reward."""
+        if not self.history:
+            return
+
+        learning_rate = 0.1
+        key = self.history[-1]
+
+        old_value = self.q_table.get(key, 0.0)
+        self.q_table[key] = old_value + learning_rate * (reward - old_value)
+
+    def learn_final_reward(self, reward):
+        """Update all decisions at the end of the game."""
+        learning_rate = 0.1
+        gamma = 0.95
+
+        for i, key in enumerate(reversed(self.history)):
+            discounted_reward = reward * (gamma ** i)
+            old_value = self.q_table.get(key, 0.0)
+            self.q_table[key] = old_value + learning_rate * (discounted_reward - old_value)
+
+        self.history = []
 
 class Cards:
     """Manage the deck of available cards and the cards currently on the board."""
@@ -402,7 +419,7 @@ class Cards:
             nb_blue = total_resources["color"].count("b")
             nb_green = total_resources["color"].count("g")
             nb_yellow = total_resources["color"].count("y")
-            nb_red = total_resources["color"].count("re")
+            nb_red = total_resources["color"].count("r") + total_resources["color"].count("re")
             nb_sets = min(nb_blue, nb_green, nb_yellow, nb_red)
             return value * nb_sets
 
@@ -414,7 +431,7 @@ class Cards:
             selected_colors = []
 
             if "re" in point_type:
-                selected_colors.append("re")
+                selected_colors.extend(["r", "re"])
                 point_type_without_red = point_type.replace("re", "")
             else:
                 point_type_without_red = point_type
@@ -472,23 +489,6 @@ class Player:
         while len(self.cards_in_hand) < 3:
             self.cards_in_hand.append(cards.draw_card())
 
-    def calculate_current_points(self, cards):
-        # same as calculate_points but without modifying self.points
-        total_resources = cards.count_resources_sanctuary(self.sanctuary_in_hand)
-        points = 0
-        for c in reversed(self.cards_played):
-            c_data = cards.count_resources_one_card(cards.card_info[c])
-            total_resources["resources"][0] += c_data["resources"][0]
-            total_resources["resources"][1] += c_data["resources"][1]
-            total_resources["resources"][2] += c_data["resources"][2]
-            total_resources["color"].extend(c_data["color"])
-            if c_data["night"]:
-                total_resources["night"] += 1
-            points += cards.count_points(c, total_resources, self.nb_parchment)
-        for s in self.sanctuary_in_hand:
-            points += cards.count_points(s, total_resources, self.nb_parchment)
-        return points
-    
     def play_card(self, index, cards, game):
         """Play a card from the player's hand.
 
@@ -528,42 +528,33 @@ class Player:
             resources["resources"][0] += card_data["resources"][0]
             resources["resources"][1] += card_data["resources"][1]
             resources["resources"][2] += card_data["resources"][2]
-            resources["color"].append(card_data["color"])
-            if card_data["night"]:
-                resources["night"] += 1
+            #resources["color"].append(card_data["color"])
+            #if card_data["night"]:
+            #    resources["night"] += 1
 
         turns_left = game.get_nb_turns_left()
-        res = [min(r, 6) for r in resources["resources"]]
-        night = min(resources["night"], 5)
-        parchment = min(self.nb_parchment, 4)
+        res = tuple(r for r in resources["resources"])
+        #night = min(resources["night"], 5)
+        #parchment = min(self.nb_parchment, 4)
 
-        hand_features = []
-        for c in self.cards_in_hand:
-            hand_features.extend(self.encode_card(c, game.cards))
+        # how many cards in hand have conditions? how many give points?
+        hand_has_condition = sum(1 for c in self.cards_in_hand if game.cards.card_info[c]["condition"] is not None)
+        hand_has_points = sum(1 for c in self.cards_in_hand if game.cards.card_info[c]["points"] is not None)
 
-        board_features = []
-        for c in game.cards.cards_on_board:
-            board_features.extend(self.encode_card(c, game.cards))
+        #return (turns_left, res, night, parchment, hand_has_condition, hand_has_points)
+        return (turns_left, res, hand_has_condition, hand_has_points)
+    
+    def get_total_ressources(self, game):
+        resources = game.cards.count_resources_sanctuary(self.sanctuary_in_hand)
 
-        # Safety padding in case hand/board has fewer than 3 cards
-        CARD_FEATURE_SIZE = 12
+        for c in self.cards_played:
+            card_data = game.cards.card_info[c]
+            resources["resources"][0] += card_data["resources"][0]
+            resources["resources"][1] += card_data["resources"][1]
+            resources["resources"][2] += card_data["resources"][2]
+        
+        return resources["resources"][0] + resources["resources"][1] + resources["resources"][2]
 
-        while len(hand_features) < 3 * CARD_FEATURE_SIZE:
-            hand_features.extend([0] * CARD_FEATURE_SIZE)
-
-        while len(board_features) < 3 * CARD_FEATURE_SIZE:
-            board_features.extend([0] * CARD_FEATURE_SIZE)
-
-        hand_features = hand_features[:3 * CARD_FEATURE_SIZE]
-        board_features = board_features[:3 * CARD_FEATURE_SIZE]
-
-        return tuple(
-            [turns_left]
-            + res
-            + [night, parchment]
-            + hand_features
-            + board_features
-        )
     def count_completed_conditions(self, cards, new_card=None, action="played"):
         # Temporarily add the card if we're evaluating a pick
         if action == "picked" and new_card is not None:
@@ -595,28 +586,9 @@ class Player:
             self.cards_played.remove(new_card)
 
         return completed
-    
-    def encode_card(self, card_id, cards):
-        card = cards.card_info[card_id]
-        points = card["points"]
-        condition = card["condition"]
-
-        return [
-            card["resources"][0],
-            card["resources"][1],
-            card["resources"][2],
-            int(card["parchment"]),
-            int(card["night"]),
-            int(card["color"] == "r"),
-            int(card["color"] == "b"),
-            int(card["color"] == "g"),
-            int(card["color"] == "y"),
-            int(card["color"] == "w"),
-            0 if points is None else points[1],
-            int(condition is not None),
-        ]
 
     def calculate_points (self, cards):
+        self.points = 0
         #print("s: ", self.sanctuary_in_hand)
         #print("s: ", self.cards_played)
 
@@ -706,8 +678,10 @@ if __name__ == "__main__":
     total_points_1 = 0
     list_points_2 = []
     total_points_2 = 0
-    start = time.time()
-    while nb_game < 200:
+    resources_1 = 0
+    resources_2 = 0
+    total_games = 200000
+    while nb_game < total_games:
         nb_game = nb_game + 1
         game = Game()
         state = game.reset()
@@ -716,37 +690,50 @@ if __name__ == "__main__":
 
             game.cards.refill_board()
 
-            #play a card
-            p1_index = ai.choose_action(game.player1, game, "play", player_id="p1")
-            p2_index = ai.choose_action(game.player2, game, "play", player_id="p2")
-            points_before = game.player1.calculate_current_points(game.cards)
-            game.play_phase(p1_index, p2_index)
-            after_state = game.player1.get_state(game)
-            points_after = game.player1.calculate_current_points(game.cards)
-            ai.learn_small_reward((points_after - points_before) / 50.0, after_state, player_id="p1")
+            # --- Play phase ---
+            p1_index = ai.choose_action(game.player1, game, "play")
+            p2_index = random.randrange(len(game.player2.cards_in_hand))
 
-            #pick a card
-            points_before = game.player1.calculate_current_points(game.cards)
+            # Peek at p1's card resources BEFORE playing
+            p1_card_num = game.player1.cards_in_hand[p1_index]
+            p1_play_resources = game.cards.card_info[p1_card_num]["resources"]
+
+            game.play_phase(p1_index, p2_index)
+            ai.learn_small_reward(sum(p1_play_resources))  # reward = resources gained by playing
+
+            # --- Pick phase ---
+            # Important: if the AI picks second, it must choose from the board
+            # AFTER the first picker has removed a card. We simulate that board
+            # here before asking the AI to choose.
             if game.first_picker == game.player1:
-                first_choice = ai.choose_action(game.player1, game, "pick", player_id="p1", nb_actions=len(game.cards.cards_on_board))
-                ia_card_picked = game.cards.cards_on_board[first_choice] 
-                second_choice = ai.choose_action(game.player2, game, "pick", player_id="p2", nb_actions=len(game.cards.cards_on_board)-1)
+                first_choice = ai.choose_action(game.player1, game, "pick")
+                ia_card_picked = game.cards.cards_on_board[first_choice]
+
+                remaining_board = game.cards.cards_on_board.copy()
+                remaining_board.pop(first_choice)
+                second_choice = random.randrange(len(remaining_board))
             else:
-                first_choice = ai.choose_action(game.player2, game, "pick", player_id="p2", nb_actions=len(game.cards.cards_on_board))
-                second_choice = ai.choose_action(game.player1, game, "pick", player_id="p1", nb_actions=len(game.cards.cards_on_board)-1)
-                ia_card_picked = game.cards.cards_on_board[second_choice]
+                first_choice = random.randrange(len(game.cards.cards_on_board))
+
+                remaining_board = game.cards.cards_on_board.copy()
+                remaining_board.pop(first_choice)
+
+                # second_choice is an index in the board AFTER first_choice is popped,
+                # which is exactly what draw_phase() expects.
+                second_choice = ai.choose_action(
+                    game.player1,
+                    game,
+                    "pick",
+                    available_cards=remaining_board,
+                )
+                ia_card_picked = remaining_board[second_choice]
+
+            picked_resources = game.cards.card_info[ia_card_picked]["resources"]
+            ai.learn_small_reward(sum(picked_resources))  # reward = resources gained by picking
 
             game.draw_phase(first_choice, second_choice)
-            after_state = game.player1.get_state(game)
-            points_after = game.player1.calculate_current_points(game.cards)
-            ai.learn_small_reward((points_after - points_before) / 50.0, after_state, player_id="p1")
-
-            #print("P1 hand:", game.player1.cards_in_hand)
-            #print("P2 hand:", game.player2.cards_in_hand)
-            
-            #print("First picker:", "P1" if game.first_picker == game.player1 else "P2")
-
             game.set_turns()
+
             if game.get_nb_turns_left() < 1:
                 points_player1 = game.player1.calculate_points(game.cards)
                 points_player2 = game.player2.calculate_points(game.cards)
@@ -754,6 +741,8 @@ if __name__ == "__main__":
                 list_points_2.append(points_player2)
                 total_points_1 += points_player1
                 total_points_2 += points_player2
+                resources_1 += game.player1.get_total_ressources(game)
+                resources_2 += game.player2.get_total_ressources(game)
 
                 if points_player1 > points_player2:
                     wins += 1
@@ -762,28 +751,21 @@ if __name__ == "__main__":
                 else:
                     losses += 1
 
-                reward_p1 = points_player1 / 50.0
-                reward_p2 = points_player2 / 50.0
-                ai.learn_final_reward(points_player1 / 50.0, player_id="p1")
-                ai.learn_final_reward(points_player2 / 50.0, player_id="p2")
+                final_reward = points_player1 - points_player2
+                ai.learn_final_reward(final_reward)
                 ai.update_epsilon()
 
-        if nb_game % 10 == 0:
+        if nb_game % 10000 == 0:
             total = wins + draws + losses
-            if total > 0:
-                mean_p1 = total_points_1 / nb_game
-                mean_p2 = total_points_2 / nb_game
-                print(f"{nb_game} games | epsilon: {ai.epsilon:.4f} | Win: {wins/total*100:.1f}% | mean P1: {mean_p1:.1f} | mean P2: {mean_p2:.1f}")
-                wins = draws = losses = 0
+            print(f"{nb_game/total_games*100:.1f}% | epsilon: {ai.epsilon:.4f} | resources_1: {resources_1/nb_game} | resources_2: {resources_2/nb_game} | epsilon: {ai.epsilon:.4f} | Q-table: {len(ai.q_table)} | Win: {wins/total*100:.1f}% Draw: {draws/total*100:.1f}% Loss: {losses/total*100:.1f}%")
+            wins = draws = losses = 0  # reset for next window
 
-             
+                
     
     ai.save_memory()
-    elapsed = time.time() - start
-    print(f"1000 games: {elapsed:.1f}s")
-    print(f"Estimated for 100k games: {elapsed * 100 / 60:.1f} minutes")
 
     print("epsilon:", ai.epsilon)
+    print("memory size:", len(ai.q_table))
 
     print("mean PLAYER 1: ", total_points_1/(nb_game))
     print("mean PLAYER 2: ", total_points_2/(nb_game))
