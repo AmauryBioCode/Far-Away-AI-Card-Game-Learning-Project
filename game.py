@@ -145,27 +145,36 @@ sanctuary_data = {
 }
 
 class AI:
-    """Card-aware AI.
+    """Rule-based AI for your new strategy.
 
-    Important idea:
-    The AI must not learn that "action 0" is good, because action 0 is a
-    different card every turn. Instead, the Q-table key contains the features
-    of the card that action points to.
+    Strategy:
+    1. Rounds 1 and 2:
+       - play and pick the card with the biggest condition.
+       - "Biggest condition" means the largest sum of required resources.
+         Example: [2, 1, 0] has value 3.
+
+    2. Rounds 3 to 8:
+       - look at the AI cards already played.
+       - find condition cards whose conditions are not completed yet.
+       - choose cards that give the missing resources for those conditions.
+       - if there is no unfinished condition, fall back to most total resources.
+
+    Tie-break:
+    - If several cards have the same score, choose the smallest card number
+      that is higher than the last card played.
+    - If none is higher than the last card played, choose the smallest card number.
     """
 
     COLOR_TO_INT = {"w": 0, "b": 1, "r": 2, "re": 2, "g": 3, "y": 4}
 
-    def __init__(self, filename="ai_memory_v2.pkl"):
+    def __init__(self, filename="ai_memory_v3.pkl"):
         self.filename = filename
         self.history = []
 
+        # These are kept so the rest of your program still works.
+        # But choose_action() below is now deterministic/rule-based.
         self.epsilon_min = 0.05
         self.epsilon_decay = 0.999995
-
-        # This makes the AI prefer resource-rich cards immediately, even before
-        # the Q-table has learned anything. Increase this if you want it to care
-        # even more about resources.
-        self.resource_weight = 1.0
 
         self.q_table = self.load_memory()
 
@@ -173,10 +182,10 @@ class AI:
         try:
             with open(self.filename, "rb") as file:
                 data = pickle.load(file)
-                self.epsilon = data.get("epsilon", 0.5)
+                self.epsilon = data.get("epsilon", 0.0)
                 return data.get("q_table", {})
         except FileNotFoundError:
-            self.epsilon = 0.5
+            self.epsilon = 0.0
             return {}
 
     def save_memory(self):
@@ -188,6 +197,8 @@ class AI:
             pickle.dump(data, file)
 
     def update_epsilon(self):
+        # Kept for compatibility with your main loop.
+        # The AI is rule-based now, so epsilon is not used in choose_action().
         if self.epsilon > self.epsilon_min:
             self.epsilon *= self.epsilon_decay
 
@@ -197,15 +208,114 @@ class AI:
             return game.cards.card_info[card_number]
         return game.cards.sanctuary_info[str(card_number)]
 
-    def card_resource_score(self, game, card_number):
-        """What you said you want: prefer cards with the most resources."""
-        return sum(self.get_card_data(game, card_number)["resources"])
+    def card_number_value(self, card_number):
+        """Numeric value printed on the card."""
+        return int(card_number)
+
+    def get_round_number(self, game):
+        """The game starts with turns_left = 8.
+
+        turns_left = 8 -> round 1
+        turns_left = 7 -> round 2
+        turns_left = 6 -> round 3
+        ...
+        turns_left = 1 -> round 8
+        """
+        return 9 - game.get_nb_turns_left()
+
+    def condition_score(self, game, card_number):
+        """How big the card condition is.
+
+        Cards with no condition have score 0.
+        """
+        card = self.get_card_data(game, card_number)
+        condition = card.get("condition")
+
+        if condition is None:
+            return 0
+
+        return sum(condition)
+
+    def get_current_resources(self, player, game):
+        """Resources the player already has from sanctuaries and played cards."""
+        total = game.cards.count_resources_sanctuary(player.sanctuary_in_hand)
+        resources = total["resources"].copy()
+
+        for c in player.cards_played:
+            card_data = self.get_card_data(game, c)
+            resources[0] += card_data["resources"][0]
+            resources[1] += card_data["resources"][1]
+            resources[2] += card_data["resources"][2]
+
+        return resources
+
+    def get_unfinished_condition_need(self, player, game):
+        """Return the missing resources for condition cards already played.
+
+        Example:
+        current resources = [1, 0, 0]
+        played condition card needs [2, 1, 0]
+        missing resources = [1, 1, 0]
+
+        If several played condition cards are unfinished, the missing resources
+        are added together.
+        """
+        current_resources = self.get_current_resources(player, game)
+        needed = [0, 0, 0]
+
+        for c in player.cards_played:
+            card_data = self.get_card_data(game, c)
+            condition = card_data.get("condition")
+
+            if condition is None:
+                continue
+
+            missing = [
+                max(0, condition[i] - current_resources[i])
+                for i in range(3)
+            ]
+
+            # Only count cards whose condition is not already completed.
+            if any(missing):
+                needed[0] += missing[0]
+                needed[1] += missing[1]
+                needed[2] += missing[2]
+
+        return needed
+
+    def needed_resource_score(self, player, game, card_number):
+        """Score a card by how many missing resources it gives.
+
+        During the last 6 rounds, the AI should not just take any resource.
+        It should prefer resources that help complete unfinished conditions.
+        """
+        needed = self.get_unfinished_condition_need(player, game)
+        card = self.get_card_data(game, card_number)
+        resources = card["resources"]
+
+        # If there is no unfinished condition, fall back to the previous behavior:
+        # pick/play the card with the most total resources.
+        if sum(needed) == 0:
+            return sum(resources)
+
+        # Count only resources that are actually useful for unfinished conditions.
+        useful_resources = 0
+        for i in range(3):
+            useful_resources += min(resources[i], needed[i])
+
+        return useful_resources
+
+    def strategic_score(self, player, game, card_number):
+        """Main score used by the AI."""
+        round_number = self.get_round_number(game)
+
+        if round_number <= 2:
+            return self.condition_score(game, card_number)
+
+        return self.needed_resource_score(player, game, card_number)
 
     def card_features(self, game, card_number):
-        """Small hashable description of a card for the Q-table.
-
-        This is the fix: the AI now knows what kind of card it is choosing.
-        """
+        """Small hashable description of a card for the Q-table history."""
         card = self.get_card_data(game, card_number)
 
         resources = tuple(card["resources"])
@@ -223,12 +333,34 @@ class AI:
         )
 
     def make_key(self, player, game, mode, card_number):
-        """Key used by the Q-table.
-
-        Old code used: (state, mode, action_index)
-        New code uses: (state, mode, chosen_card_features)
-        """
         return (player.get_state(game), mode, self.card_features(game, card_number))
+
+    def break_tie(self, player, available_cards, candidate_actions):
+        """Apply your tie-break rule.
+
+        First preference:
+        - the smallest card number higher than the last card played.
+
+        If impossible:
+        - the smallest card number.
+        """
+        last_value = int(player.number_last_card)
+
+        higher_than_last = [
+            action for action in candidate_actions
+            if self.card_number_value(available_cards[action]) > last_value
+        ]
+
+        if higher_than_last:
+            return min(
+                higher_than_last,
+                key=lambda action: self.card_number_value(available_cards[action])
+            )
+
+        return min(
+            candidate_actions,
+            key=lambda action: self.card_number_value(available_cards[action])
+        )
 
     def choose_action(self, player, game, mode, available_cards=None):
         """Choose an index from available_cards.
@@ -236,16 +368,16 @@ class AI:
         For mode == "play", available_cards defaults to the player's hand.
         For mode == "pick", available_cards defaults to the board.
 
-        The function returns an INDEX, so it still works with play_card() and
-        draw_phase(). But internally the AI evaluates the actual card at that
-        index, not only the index number.
+        It returns an INDEX, so it still works with play_card() and draw_phase().
         """
         if mode == "play":
             if available_cards is None:
                 available_cards = player.cards_in_hand
+
         elif mode == "pick":
             if available_cards is None:
                 available_cards = game.cards.cards_on_board
+
         else:
             raise ValueError(f"Unknown mode: {mode}")
 
@@ -253,39 +385,33 @@ class AI:
         if not possible_actions:
             raise ValueError("AI has no available actions")
 
-        # Exploration: sometimes choose randomly so the Q-table can learn.
-        if random.random() < self.epsilon:
-            action = random.choice(possible_actions)
-            chosen_card = available_cards[action]
-            self.history.append(self.make_key(player, game, mode, chosen_card))
-            return action
-
-        # Exploitation: choose the card with the best estimated value.
-        # The resource_weight makes it pick high-resource cards immediately.
-        best_action = None
-        best_value = -float("inf")
-
+        scores = []
         for action in possible_actions:
             card_number = available_cards[action]
-            key = self.make_key(player, game, mode, card_number)
+            score = self.strategic_score(player, game, card_number)
+            scores.append(score)
 
-            learned_value = self.q_table.get(key, 0.0)
-            resource_value = self.card_resource_score(game, card_number)
-            value = learned_value + self.resource_weight * resource_value
+        best_score = max(scores)
 
-            # Small random tie-breaker, useful when cards have equal resources.
-            value += random.random() * 0.000001
+        candidate_actions = [
+            action for action, score in zip(possible_actions, scores)
+            if score == best_score
+        ]
 
-            if value > best_value:
-                best_value = value
-                best_action = action
+        best_action = self.break_tie(player, available_cards, candidate_actions)
 
         chosen_card = available_cards[best_action]
         self.history.append(self.make_key(player, game, mode, chosen_card))
+
         return best_action
 
     def learn_small_reward(self, reward):
-        """Update the last decision using an immediate reward."""
+        """Kept for compatibility.
+
+        The new AI chooses with rules, not randomness. This still records Q-values
+        if you want to look at them later, but choose_action() does not depend on
+        them anymore.
+        """
         if not self.history:
             return
 
@@ -296,7 +422,7 @@ class AI:
         self.q_table[key] = old_value + learning_rate * (reward - old_value)
 
     def learn_final_reward(self, reward):
-        """Update all decisions at the end of the game."""
+        """Kept for compatibility with your main loop."""
         learning_rate = 0.1
         gamma = 0.95
 
