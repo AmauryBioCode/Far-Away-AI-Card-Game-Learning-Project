@@ -40,7 +40,7 @@ This AI learns from **card relationships** rather than hand-written rules:
 - Win rate: **81.3%** vs random opponent
 - Memory: 599,535 learned links
 
-![Learning AI V3.1 Score Distribution](V3_1_newIA.png)
+![Learning AI V3.1 Score Distribution](V3.1_newIA.png)
 
 ---
 
