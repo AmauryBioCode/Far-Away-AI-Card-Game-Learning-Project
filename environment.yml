@@ -1,8 +1,8 @@
 name: far-away
 channels:
-  -defaults
+  - defaults
 dependencies:
-  -python=3.10
-  -numpy
-  -matplotlib
-  -pip
+  - python=3.10
+  - numpy
+  - matplotlib
+  - pip
