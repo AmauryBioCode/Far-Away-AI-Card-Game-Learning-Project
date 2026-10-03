@@ -2,26 +2,26 @@
 
 A reinforcement learning and rule-based AI system for the card game Far away.
 
-## 🎮 Game Overview
+## Game Overview
 
 **Far Away** is a 2-player card game where players:
 - Play cards from their hand to the table
 - Pick cards from a shared board
 - Build card synergies through conditions and point-scoring rules
-- Earn sanctuary cards strategically to support their played cards
+- Earn bonus cards strategically to support their played cards
 
 ### Key Game Mechanics
 - **8 turns per game**, alternating play and pick phases
-- **77 regular cards** and **54 sanctuary cards** with distinct properties:
+- **77 regular cards** and **54 sanctuary (bonus) cards** with distinct properties:
   - Resources (stone, deer, pineapple)
-  - Colors (blue, red, green, yellow, white/gray)
+  - Colors (blue, red, green, yellow, white)
   - Night symbols and parchment markers
   - Conditions that must be met to score points
   - Scoring rules (fixed points, resource multipliers, color sets, etc.)
 
 ---
 
-## 📊 AI Implementations
+## AI Implementations
 
 ### 1. Learning AI (Link-Based Reinforcement Learning)
 **File:** `class_new_IA.py` | **Runner:** `new_IA.py`
@@ -92,7 +92,7 @@ Hard-coded strategy with multi-level decision logic:
 
 ---
 
-## 🚀 How to Run
+## How to Run
 
 ### Training the Learning AI
 ```bash
@@ -113,7 +113,7 @@ python rule-based_strategic_AI.py
 
 ---
 
-## 📁 Project Structure
+## Project Structure
 
 ```
 Far_away/
@@ -135,7 +135,7 @@ Far_away/
 
 ---
 
-## 🧠 Learning Mechanism (Link-Based RL)
+## Learning Mechanism (Link-Based RL)
 
 The learning AI rewards **card relationships** identified at the end of each game:
 
@@ -171,7 +171,7 @@ The learning AI rewards **card relationships** identified at the end of each gam
 
 ---
 
-## 📊 Key Metrics
+## Key Metrics
 
 **Training Progress (Learning AI V3.1):**
 - **Epsilon decay:** 0.99997 (from 1.0 to 0.05 over 200k games)
@@ -187,17 +187,7 @@ The learning AI rewards **card relationships** identified at the end of each gam
 
 ---
 
-## 🎯 Next Steps / Future Improvements
-
-1. **Hybrid Approach**: Combine learning AI's adaptability with rule-based strategy's stability
-2. **Multi-Agent Learning**: Train both players as learning agents simultaneously
-3. **State Compression**: Reduce state space for faster convergence
-4. **Transfer Learning**: Pre-train on simpler games before full game
-5. **Evaluation vs. Stronger Baselines**: Add other hand-crafted strategies
-
----
-
-## 📝 Results Summary
+## Results Summary
 
 Both implementations significantly outperform random play:
 
