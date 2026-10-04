@@ -219,7 +219,3 @@ The **rule-based AI performs is better**, but the **learning AI is adaptive** an
 ## 📄 License
 
 This project is licensed under the **MIT License**.
-
-## 👤 Author
-
-AmauryBioCode
