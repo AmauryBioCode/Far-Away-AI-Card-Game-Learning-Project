@@ -1,8 +1,7 @@
-name: far-away
+name: far_away
 channels:
-  - defaults
+  - conda-forge
 dependencies:
-  - python=3.10
+  - python=3.12
   - numpy
   - matplotlib
-  - pip

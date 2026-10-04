@@ -21,10 +21,32 @@ A reinforcement learning and rule-based AI system for the card game Far away.
 
 ---
 
+## Setup
+
+### Prerequisites
+
+Install [Miniconda](https://docs.conda.io/) or Anaconda.
+
+### 1. Create the environment
+
+From the project folder (where `environment.yml` is located), run:
+
+```bash
+conda env create -f environment.yml
+```
+
+### 2. Activate the environment
+
+```bash
+conda activate far_away
+```
+
+---
+
 ## AI Implementations
 
 ### 1. Learning AI (Link-Based Reinforcement Learning)
-**File:** `class_new_IA.py` | **Runner:** `new_IA.py`
+**File:** `class_learning_IA.py` | **Runner:** `learning_IA.py`
 
 This AI learns from **card relationships** rather than hand-written rules:
 - Learns which card combinations are effective
@@ -40,12 +62,12 @@ This AI learns from **card relationships** rather than hand-written rules:
 - Win rate: **81.3%** vs random opponent
 - Memory: 599,535 learned links
 
-![Learning AI V3.1 Score Distribution](V3.1_newIA.png)
+![Learning AI V3.1 Score Distribution](readme_images/V3.1_learningIA.png)
 
 ---
 
 ### 2. Rule-Based Strategic AI
-**File:** `class_rule-based_strategic_AI.py` | **Runner:** `rule-based_strategic_AI.py`
+**File:** `scr/class_rule-based_strategic_AI.py` | **Runner:** `src/rule-based_strategic_AI.py`
 
 Hard-coded strategy with multi-level decision logic:
 
@@ -60,7 +82,7 @@ Hard-coded strategy with multi-level decision logic:
 - Mean score: **47.17** | Median: **47.0**
 - Win rate: **83.8%** vs random opponent
 
-![Rule-Based V5 Score Distribution](V5.png)
+![Rule-Based V5 Score Distribution](readme_images/V5_rulebased.png)
 
 ---
 
@@ -70,7 +92,7 @@ Hard-coded strategy with multi-level decision logic:
 - Mean score: **22.79** | Median: **21.0**
 - Win rate: **48.9%** (ties: 2.3%)
 
-![Random Baseline](random_cards.png)
+![Random Baseline](readme_images/random_cards.png)
 
 ### Learning AI Progression
 
@@ -115,24 +137,30 @@ python rule-based_strategic_AI.py
 
 ## Project Structure
 
-```
+"""
 Far_away/
-├── README.md                           # This file
-├── data.py                             # Card and sanctuary definitions
-├── class_new_IA.py                     # Learning AI (AI, Cards, Player, Game classes)
-├── new_IA.py                           # Learning AI training script
-├── class_rule-based_strategic_AI.py   # Rule-based AI implementation
-├── rule-based_strategic_AI.py         # Rule-based AI training script
-├── new_IA_results.txt                 # Learning AI test results
-├── rule_based_results.txt             # Rule-based AI test results
-└── [images]/
-    ├── random_cards.png               # Baseline random selection
-    ├── V3.png                         # Learning AI version 3
-    ├── V3_1_newIA.png                 # Learning AI version 3.1 (best)
-    ├── V4.png                         # Rule-based version 4
-    └── V5.png                         # Rule-based version 5 (best)
-```
-
+├── results/
+│   ├── learning_IA/
+│   │   ├── ai_memory_link_learning.pkl
+│   │   ├── training_log.txt
+│   │   ├── summary.json
+│   │   ├── scores.csv
+│   │   ├── score_distribution_player1.png
+│   │   └── score_distribution_player2.png
+│   │
+│   └── rule_based_strategic_IA/
+│       ├── ai_memory_v4.pkl
+│       ├── training_log.txt
+│       ├── summary.json
+│       ├── scores.csv
+│       ├── score_distribution_player1.png
+│       └── score_distribution_player2.png
+│
+└── src/
+    ├── class_learning_IA.py
+    ├── learning_IA.py
+    ├── class_rule-based_strategic_AI.py
+    └── rule-based_strategic_AI.py
 ---
 
 ## Learning Mechanism (Link-Based RL)
