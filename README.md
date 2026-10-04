@@ -161,6 +161,8 @@ Far_away/
     ├── learning_IA.py
     ├── class_rule-based_strategic_AI.py
     └── rule-based_strategic_AI.py
+"""
+
 ---
 
 ## Learning Mechanism (Link-Based RL)
@@ -196,22 +198,6 @@ The learning AI rewards **card relationships** identified at the end of each gam
 - Q-table: `(state, mode, card_features) → estimated_value`
 - Card Values: `(mode, card_features) → standalone_value`
 - Link Values: `(mode, type, category, existing_card, candidate_card) → link_strength`
-
----
-
-## Key Metrics
-
-**Training Progress (Learning AI V3.1):**
-- **Epsilon decay:** 0.99997 (from 1.0 to 0.05 over 200k games)
-- **Learning rate:** 0.08
-- **Memory learned:** 599,535 unique links
-- **Context links rewarded:** Tracked per game
-- **Useless penalties applied:** Conservative approach (only when truly unhelpful)
-
-**Score Distribution:**
-- Rule-based AI V5 peaks at 45-50 points (strongest cluster)
-- Learning AI V3.1 peaks at 40-45 points (still strong but slightly lower variance)
-- Both vastly outperform the 22.79 baseline
 
 ---
 
