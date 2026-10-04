@@ -137,7 +137,8 @@ python rule-based_strategic_AI.py
 
 ## Project Structure
 
-"""
+
+```text
 Far_away/
 ├── results/
 │   ├── learning_IA/
@@ -161,7 +162,7 @@ Far_away/
     ├── learning_IA.py
     ├── class_rule-based_strategic_AI.py
     └── rule-based_strategic_AI.py
-"""
+```
 
 ---
 
