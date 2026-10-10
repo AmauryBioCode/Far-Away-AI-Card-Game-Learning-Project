@@ -216,6 +216,6 @@ The **rule-based AI performs is better**, but the **learning AI is adaptive** an
 
 ---
 
-## 📄 License
+## License
 
 This project is licensed under the **MIT License**.
